@@ -39,6 +39,27 @@ def inject_styles() -> None:
             background: rgba(255,255,255,.055);
             border-color: rgba(255,255,255,.12);
         }
+        [data-testid="stSidebar"] [data-testid="stExpander"] > details > summary {
+            background: transparent !important;
+            color: #F7F9FF !important;
+            transition: background-color .16s ease, color .16s ease;
+        }
+        [data-testid="stSidebar"] [data-testid="stExpander"] > details > summary:hover {
+            background: rgba(255,255,255,.07) !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stExpander"] > details[open] > summary {
+            background: rgba(64,93,230,.23) !important;
+            color: #FFFFFF !important;
+            border-bottom: 1px solid rgba(255,255,255,.1);
+        }
+        [data-testid="stSidebar"] [data-testid="stExpander"] > details > summary:focus-visible {
+            outline: 2px solid #8EA0FF;
+            outline-offset: -2px;
+        }
+        [data-testid="stSidebar"] [data-testid="stExpander"] > details > summary * {
+            color: inherit !important;
+            fill: currentColor !important;
+        }
         .hero {
             display: flex;
             align-items: flex-end;
@@ -161,5 +182,4 @@ def inject_styles() -> None:
         """,
         unsafe_allow_html=True,
     )
-
 
