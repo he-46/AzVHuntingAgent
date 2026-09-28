@@ -1,0 +1,85 @@
+# 求职时间线 Agent 原型
+
+单人本地使用的求职进度原型。把 JD、公司信息、招聘通知、投递和面试记录粘贴到首页总输入框，AI 会分拣成可编辑草稿；确认后生成时间线，并给出基于已记录面试表现的定性评估。
+
+## 功能
+
+- 一个总输入框同时分拣求职者姓名、教育、工作、实习、项目、技能，以及公司、岗位、JD、招聘日期和进度事件。
+- 求职者资料可以独立保存，不要求输入岗位；保存后会自动带入岗位定制简历。
+- 草稿可修改、选择新建或更新职位；保留每次粘贴的原始输入。
+- 全部职位按“时间横轴、岗位纵轴”显示为阶段框条；今天默认位于视窗约 40%，支持滚轮缩放和拖拽平移，超出视窗的区间会自动裁剪。
+- 岗位按离今天最近的节点优先；岗位行折叠时展示公司、岗位、进度和最近节点，展开后查看详细资料与事件。
+- 侧栏可幂等加载 4 组示例数据，覆盖跨视窗、近期、已结束和未来岗位。
+- 针对当前岗位制作定制简历：粘贴基础简历，AI 按 JD 调整重点，人工核对后保存版本并下载 Markdown。
+- 定制简历同时输出匹配点、缺失证据和面试准备主题；基础简历未出现的新数字会被程序阻止导入。
+- 手动录入投递、测评、面试、反馈等事件；修改或删除记录。
+- 将通知中的明确截止时间与自己设定的截止时间、建议跟进时间分开显示。
+- 生成阶段时间线，并导出 CSV。
+- 使用 OpenAI 从粘贴的混合文本中提取字段与节点；导入前由用户检查。也可手动创建和录入。
+- 面试评估只显示定性趋势与依据，不输出未经校准的录取百分比。
+
+## 本地运行
+
+需要 Python 3.12 或更新版本。在项目目录执行：
+
+```powershell
+python -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+& .\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+若当前电脑的 `python` 命令不可用，可在第一行使用已安装 Python 的完整路径。打开终端显示的本地地址即可使用。数据保存在 `data/applications.db`。
+
+手动录入不需要模型密钥。若要使用“提取信息”功能，在启动应用前配置环境变量：
+
+```powershell
+$env:OPENAI_API_KEY = "你的 API Key"
+# 可选：$env:OPENAI_MODEL = "gpt-4o-mini"
+& .\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+点击提取时，粘贴的简历或招聘文本会发送至配置的模型服务。密钥只放在环境变量中，不要写进数据库或提交到代码仓库。未写明完整年月日的时间不会自动成为正式截止日期，需要手动确认。
+
+简历制作使用同一组 `OPENAI_API_KEY` 和 `OPENAI_MODEL`。点击生成时，基础简历、当前岗位 JD 和公司信息会发送至模型服务；生成内容先进入编辑区，只有点击保存后才会写入本地数据库。
+
+### LLM 用量限制
+
+默认限制如下，可在启动应用前通过环境变量调整：
+
+```powershell
+$env:LLM_MAX_INPUT_CHARS = "40000"          # 所有消息合计字符数
+$env:LLM_DAILY_TOKEN_BUDGET = "100000"      # 每日本地 Token 预算
+$env:LLM_MAX_CALLS_PER_DAY = "30"            # 每日成功调用次数
+$env:LLM_DUPLICATE_WINDOW_SECONDS = "60"     # 相同请求冷却时间
+```
+
+招聘信息分拣额外限制为 30,000 字符和最多 3,000 输出 Token；定制简历限制基础简历 20,000 字符、JD 15,000 字符和最多 4,000 输出 Token。侧栏“AI 用量与限制”显示模型返回的实际 Token 用量。达到任一限制后，请求会在调用模型前停止。
+
+## 数据口径
+
+当前阶段由已发生的投递、测评、面试及企业反馈事件决定；JD 本身不能证明已经投递或完成面试。截止时间只有在用户填写或文本明确给出时才记录。等待天数可提示跟进，但不能单独判断录取结果。
+
+## 项目结构
+
+```text
+app.py                         Streamlit 入口与表单编排
+database.py                    SQLite 数据访问与 Schema 初始化
+domain.py                      时间线、阶段和机会趋势规则
+extractor.py                   招聘信息提取与证据核验
+resume_agent.py                岗位定制简历规则
+job_agent/config.py            环境配置与时区
+job_agent/llm/client.py        统一结构化 LLM 调用
+job_agent/services/intake.py   确认招聘草稿的应用用例
+job_agent/ui/portfolio.py      全局岗位时间线界面
+job_agent/ui/resume.py         简历制作界面
+job_agent/ui/styles.py         页面主题样式
+tests/                         单元测试与 Streamlit 冒烟测试
+```
+
+UI 通过服务层执行跨实体流程；LLM 功能共用同一个客户端入口，业务规则不依赖 Streamlit。
+
+## 验证
+
+```powershell
+& .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```

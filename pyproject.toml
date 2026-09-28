@@ -1,0 +1,19 @@
+[project]
+name = "job-timeline-agent"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "streamlit>=1.64,<2",
+  "altair>=6,<7",
+  "openai>=3.19,<4",
+  "pydantic>=2.13,<3",
+  "pandas>=3,<4",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+exclude = [".venv", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
