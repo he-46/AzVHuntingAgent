@@ -11,6 +11,8 @@ from job_agent.llm.client import (
     LLMRequestError,
     parse_structured,
 )
+from job_agent.skills.registry import get_skill
+from job_agent.skills.resume import SYSTEM_PROMPT as RESUME_SYSTEM_PROMPT
 
 
 class ResumeGenerationError(RuntimeError):
@@ -26,13 +28,7 @@ class _ResumeDraft(BaseModel):
     interview_focus: list[str]
 
 
-_INSTRUCTIONS = """你是求职简历编辑器。根据候选人的基础简历和目标岗位资料，生成中文 Markdown 简历草稿。
-只能重组、压缩和改写基础简历中明确存在的事实。不得新增公司、项目、职责、技能、学历、证书、数字、
-业绩、时间或个人信息。JD 中出现而基础简历未证明的能力，只能列入 missing_evidence，不能写进简历。
-优先把与 JD 最相关的真实经历放在前面，使用简洁、具体、以行动开头的表达。保留基础简历中的联系方式，
-不要猜测或补全。tailored_resume_markdown 应包含适合直接编辑的完整简历结构。
-match_analysis 简明说明已有经历与 JD 的匹配点；missing_evidence 列出 JD 要求但简历没有证据的内容；
-interview_focus 列出建议准备的面试主题。不要输出录取概率。"""
+RESUME_SKILL = get_skill("resume_generation")
 
 
 def _numbers(text: str) -> set[str]:
@@ -50,18 +46,24 @@ def generate_resume_draft(
     """Return a reviewable resume draft without inventing unsupported numbers."""
     if not isinstance(source_resume, str) or not source_resume.strip():
         raise ResumeGenerationError("请先粘贴基础简历。")
-    if len(source_resume) > 20_000:
+    resume_limit = RESUME_SKILL.input_limit("source_resume")
+    if len(source_resume) > resume_limit.max_chars:
         raise ResumeGenerationError(
-            f"基础简历共 {len(source_resume)} 个字符，单次最多支持 20000 个字符。"
+            f"{resume_limit.label}共 {len(source_resume)} 个字符，"
+            f"单次最多支持 {resume_limit.max_chars} 个字符。"
         )
     if not jd.strip():
         raise ResumeGenerationError("当前岗位没有 JD，请先补充 JD 后再制作定制简历。")
-    if len(jd) > 15_000:
-        raise ResumeGenerationError(f"当前 JD 共 {len(jd)} 个字符，单次最多支持 15000 个字符。")
+    jd_limit = RESUME_SKILL.input_limit("jd")
+    if len(jd) > jd_limit.max_chars:
+        raise ResumeGenerationError(
+            f"{jd_limit.label}共 {len(jd)} 个字符，"
+            f"单次最多支持 {jd_limit.max_chars} 个字符。"
+        )
     try:
         parsed = parse_structured(
             messages=[
-                {"role": "system", "content": _INSTRUCTIONS},
+                {"role": "system", "content": RESUME_SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": (
@@ -71,9 +73,9 @@ def generate_resume_draft(
                 },
             ],
             schema=_ResumeDraft,
-            operation="resume_generation",
-            max_output_tokens=4_000,
-            timeout=45.0,
+            operation=RESUME_SKILL.operation,
+            max_output_tokens=RESUME_SKILL.max_output_tokens,
+            timeout=RESUME_SKILL.timeout_seconds,
         )
     except LLMConfigurationError as exc:
         raise ResumeGenerationError(f"{exc}；设置后才能生成定制简历。") from exc

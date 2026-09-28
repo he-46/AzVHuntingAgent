@@ -15,6 +15,7 @@ import domain
 from extractor import ExtractionError, extract_job_info
 from job_agent.config import Settings
 from job_agent.llm.client import daily_usage_snapshot
+from job_agent.skills import list_skills
 from job_agent.services.intake import save_reviewed_intake, sync_recruitment_event
 from job_agent.ui.portfolio import (
     portfolio_chart as portfolio_chart_component,
@@ -682,6 +683,15 @@ def main() -> None:
                 f"调用 {llm_usage['calls']} / {llm_usage['call_budget']} 次 · "
                 f"单次输入最多 {llm_usage['max_input_chars']:,} 字符"
             )
+        with st.expander("Agent Skills", expanded=False):
+            for skill in list_skills():
+                st.write(f"**{skill.title}**")
+                st.caption(skill.description)
+                limits = " · ".join(
+                    f"{item.label} ≤ {item.max_chars:,} 字符" for item in skill.input_limits
+                )
+                st.caption(f"{limits} · 输出 ≤ {skill.max_output_tokens:,} tokens")
+                st.caption("发送给模型：" + "、".join(skill.external_data))
         if jobs:
             job_by_id = {job["id"]: job for job in jobs}
             selected_id = st.selectbox(

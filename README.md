@@ -17,6 +17,7 @@
 - 生成阶段时间线，并导出 CSV。
 - 使用 OpenAI 从粘贴的混合文本中提取字段与节点；导入前由用户检查。也可手动创建和录入。
 - 面试评估只显示定性趋势与依据，不输出未经校准的录取百分比。
+- Agent 能力通过显式 Skills 注册表管理，界面可以查看每项能力的输入、输出与外发数据范围。
 
 ## 本地运行
 
@@ -69,6 +70,7 @@ extractor.py                   招聘信息提取与证据核验
 resume_agent.py                岗位定制简历规则
 job_agent/config.py            环境配置与时区
 job_agent/llm/client.py        统一结构化 LLM 调用
+job_agent/skills/              能力规格、提示词和显式注册表
 job_agent/services/intake.py   确认招聘草稿的应用用例
 job_agent/ui/portfolio.py      全局岗位时间线界面
 job_agent/ui/resume.py         简历制作界面
@@ -77,6 +79,12 @@ tests/                         单元测试与 Streamlit 冒烟测试
 ```
 
 UI 通过服务层执行跨实体流程；LLM 功能共用同一个客户端入口，业务规则不依赖 Streamlit。
+
+### Skills 设计
+
+`job_agent/skills/` 是应用内部的能力层。当前注册“信息分拣”和“岗位定制简历”两个能力。每个 Skill 声明输入字符限制、输出 Token 上限、超时和会发送给模型的数据；提示词与能力配置放在一起，确定性核验仍留在业务模块。
+
+注册表只显式导入经过审查的模块，不扫描目录或动态执行文件。Word/PDF 导入、DOCX/PDF 导出会在完成解析、格式校验和界面流程后再注册为可用 Skill。
 
 ## 验证
 
