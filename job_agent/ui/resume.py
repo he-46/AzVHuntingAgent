@@ -30,7 +30,12 @@ def _candidate_profile_markdown(profile: dict | None) -> str:
     return "\n\n".join(sections)
 
 
-def render_resume_workflow(job: dict, *, db_path: str) -> None:
+def render_resume_workflow(
+    job: dict,
+    *,
+    db_path: str,
+    api_key: str | None = None,
+) -> None:
     application_id = job["id"]
     versions = database.list_resume_versions(application_id, db_path=db_path)
     candidate_profile = database.get_candidate_profile(db_path=db_path)
@@ -79,6 +84,7 @@ def render_resume_workflow(job: dict, *, db_path: str) -> None:
                         role=job["role"],
                         jd=job.get("jd") or "",
                         company_info=job.get("company_info") or "",
+                        api_key=api_key,
                     )
                 st.session_state[draft_key] = draft
                 st.session_state[editor_key] = draft["tailored_resume_markdown"]

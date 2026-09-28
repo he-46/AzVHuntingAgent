@@ -42,6 +42,7 @@ def generate_resume_draft(
     role: str,
     jd: str,
     company_info: str = "",
+    api_key: str | None = None,
 ) -> dict:
     """Return a reviewable resume draft without inventing unsupported numbers."""
     if not isinstance(source_resume, str) or not source_resume.strip():
@@ -76,6 +77,7 @@ def generate_resume_draft(
             operation=RESUME_SKILL.operation,
             max_output_tokens=RESUME_SKILL.max_output_tokens,
             timeout=RESUME_SKILL.timeout_seconds,
+            api_key=api_key,
         )
     except LLMConfigurationError as exc:
         raise ResumeGenerationError(f"{exc}；设置后才能生成定制简历。") from exc

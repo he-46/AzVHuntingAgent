@@ -224,7 +224,12 @@ def _verify_result(parsed: _JobInfo, text: str) -> dict:
     return result
 
 
-def extract_job_info(text: str, reference_date: str | None = None) -> dict:
+def extract_job_info(
+    text: str,
+    reference_date: str | None = None,
+    *,
+    api_key: str | None = None,
+) -> dict:
     """Extract job information and evidence-backed timeline events.
 
     ``reference_date`` is context only and never supplies a missing year or day.
@@ -263,6 +268,7 @@ def extract_job_info(text: str, reference_date: str | None = None) -> dict:
             operation=INTAKE_SKILL.operation,
             max_output_tokens=INTAKE_SKILL.max_output_tokens,
             timeout=INTAKE_SKILL.timeout_seconds,
+            api_key=api_key,
         )
     except LLMConfigurationError as exc:
         raise ExtractionError(f"{exc}；设置后可使用 AI 提取，或先手动录入时间线。") from exc

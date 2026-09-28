@@ -33,11 +33,12 @@ def parse_structured(
     operation: str,
     max_output_tokens: int,
     timeout: float = 30.0,
+    api_key: str | None = None,
 ) -> SchemaT:
     """Call the configured model and return a validated structured response."""
     settings = Settings.from_env()
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not api_key:
+    resolved_api_key = (api_key or os.environ.get("OPENAI_API_KEY", "")).strip()
+    if not resolved_api_key:
         raise LLMConfigurationError("未配置 OPENAI_API_KEY")
     prompt_chars = sum(len(message.get("content") or "") for message in messages)
     if prompt_chars > settings.llm_max_input_chars:
@@ -84,7 +85,7 @@ def parse_structured(
     except ImportError as exc:
         raise LLMConfigurationError("缺少 openai 依赖") from exc
     try:
-        response = OpenAI(api_key=api_key, timeout=timeout).responses.parse(
+        response = OpenAI(api_key=resolved_api_key, timeout=timeout).responses.parse(
             model=model,
             input=messages,
             text_format=schema,

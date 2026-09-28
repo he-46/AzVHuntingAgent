@@ -19,6 +19,39 @@ class _Answer(BaseModel):
 
 
 class LLMBudgetTests(unittest.TestCase):
+    def test_explicit_api_key_works_without_environment_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = str(Path(temporary) / "usage.db")
+            captured: dict = {}
+            response = types.SimpleNamespace(
+                status="completed",
+                output_parsed={"value": "ok"},
+                usage=None,
+            )
+
+            def openai_factory(**kwargs):
+                captured.update(kwargs)
+                return types.SimpleNamespace(
+                    responses=types.SimpleNamespace(parse=lambda **kwargs: response)
+                )
+
+            fake_openai = types.SimpleNamespace(OpenAI=openai_factory)
+            with patch.dict(
+                os.environ,
+                {"JOB_AGENT_DB_PATH": db_path, "OPENAI_API_KEY": ""},
+                clear=True,
+            ), patch.dict(sys.modules, {"openai": fake_openai}):
+                result = parse_structured(
+                    messages=[{"role": "user", "content": "hello"}],
+                    schema=_Answer,
+                    operation="session-key-test",
+                    max_output_tokens=100,
+                    api_key="web-session-key",
+                )
+
+            self.assertEqual(result.value, "ok")
+            self.assertEqual(captured["api_key"], "web-session-key")
+
     def test_records_usage_and_blocks_immediate_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "usage.db")

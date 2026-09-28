@@ -23,6 +23,10 @@
 
 需要 Python 3.12 或更新版本。在项目目录执行：
 
+Windows 可以直接双击根目录的 `start.bat`。脚本会自动创建虚拟环境、按需安装依赖，并在 `http://127.0.0.1:8505` 启动应用。
+
+也可以在 PowerShell 中手动执行：
+
 ```powershell
 python -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -42,6 +46,8 @@ $env:OPENAI_API_KEY = "你的 API Key"
 点击提取时，粘贴的简历或招聘文本会发送至配置的模型服务。密钥只放在环境变量中，不要写进数据库或提交到代码仓库。未写明完整年月日的时间不会自动成为正式截止日期，需要手动确认。
 
 简历制作使用同一组 `OPENAI_API_KEY` 和 `OPENAI_MODEL`。点击生成时，基础简历、当前岗位 JD 和公司信息会发送至模型服务；生成内容先进入编辑区，只有点击保存后才会写入本地数据库。
+
+也可以在网页侧栏的“AI 服务配置”中输入 API Key 并点击“应用”。网页密钥只保存在当前 Streamlit 会话内，不会写入数据库、日志或项目文件；断开会话或重启服务后可能需要重新输入。网页会话密钥优先于启动环境中的 `OPENAI_API_KEY`。
 
 ### LLM 用量限制
 

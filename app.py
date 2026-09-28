@@ -17,6 +17,7 @@ from job_agent.config import Settings
 from job_agent.llm.client import daily_usage_snapshot
 from job_agent.skills import list_skills
 from job_agent.services.intake import save_reviewed_intake, sync_recruitment_event
+from job_agent.ui.llm_settings import configured_api_key, render_llm_settings
 from job_agent.ui.portfolio import (
     portfolio_chart as portfolio_chart_component,
     portfolio_snapshots as portfolio_snapshots_component,
@@ -263,7 +264,12 @@ def _add_event(application_id: int) -> None:
                 st.error(str(exc))
 
 
-def _unified_input(jobs: list[dict], selected_id: int | None) -> None:
+def _unified_input(
+    jobs: list[dict],
+    selected_id: int | None,
+    *,
+    api_key: str | None = None,
+) -> None:
     st.markdown('<div class="section-kicker">SMART INTAKE</div>', unsafe_allow_html=True)
     st.markdown("### 一次粘贴，AI 自动分拣")
     st.caption("把简历、经历、技能、JD、招聘日期和面试消息写在同一个框里。AI 会分类生成草稿，由你核对后保存。")
@@ -304,7 +310,11 @@ def _unified_input(jobs: list[dict], selected_id: int | None) -> None:
         else:
             try:
                 with st.spinner("正在分拣职位、日期和进度…"):
-                    result = extract_job_info(source_text, reference_date=TODAY.isoformat())
+                    result = extract_job_info(
+                        source_text,
+                        reference_date=TODAY.isoformat(),
+                        api_key=api_key,
+                    )
                 version = st.session_state.get("unified_draft_version", 0) + 1
                 st.session_state["unified_draft_version"] = version
                 st.session_state["unified_draft"] = {
@@ -672,6 +682,7 @@ def main() -> None:
                 )
             else:
                 st.caption("在总输入框粘贴简历，AI 分析后即可保存。")
+        render_llm_settings()
         with st.expander("AI 用量与限制", expanded=False):
             llm_usage = daily_usage_snapshot()
             token_ratio = min(1.0, llm_usage["total_tokens"] / llm_usage["token_budget"])
@@ -709,7 +720,8 @@ def main() -> None:
                 sample_ids = load_sample_data(DB_PATH, today=TODAY)
                 st.session_state["flash_success"] = "已加载 4 组时间线示例数据。"
                 _rerun_after_change(sample_ids[0])
-    _unified_input(jobs, selected_id)
+    api_key = configured_api_key()
+    _unified_input(jobs, selected_id, api_key=api_key)
     _create_job(first_job=not jobs)
     _portfolio_overview(jobs)
 
@@ -760,7 +772,7 @@ def main() -> None:
             st.write(f"• {reason}")
     st.caption(outlook.get("uncertainty") or "评估仅供整理进度参考。")
 
-    render_resume_workflow(job, db_path=DB_PATH)
+    render_resume_workflow(job, db_path=DB_PATH, api_key=api_key)
     _add_event(selected_id)
     _edit_events(selected_id, events)
     _job_details(job)
