@@ -71,6 +71,15 @@ class TimelineChartTests(unittest.TestCase):
         self.assertTrue(bar["mark"]["clip"])
         self.assertGreaterEqual(bar["mark"]["size"], 36)
         self.assertEqual(spec["layer"][1]["mark"]["type"], "text")
+        label_layer = spec["layer"][1]
+        label_calculations = " ".join(
+            transform.get("calculate", "") for transform in label_layer["transform"]
+        )
+        self.assertIn("timeline_window['开始']", label_calculations)
+        self.assertIn(domain[0].isoformat(), label_calculations)
+        self.assertIn(domain[1].isoformat(), label_calculations)
+        self.assertEqual(label_layer["encoding"]["x"]["field"], "_dynamic_label_at")
+        self.assertIn("filter", label_layer["transform"][-1])
         self.assertAlmostEqual(today_position, 0.4)
         self.assertEqual(spec["params"][0]["bind"], "scales")
 

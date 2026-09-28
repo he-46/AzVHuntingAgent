@@ -112,13 +112,6 @@ def portfolio_chart(snapshots: list[dict], *, today: date) -> alt.LayerChart | N
         end = max(boundary_dates + deadline_dates)
         if end <= start:
             end = start + timedelta(days=7)
-        label_start = max(start, visible_start)
-        label_end = min(end, visible_end)
-        label_at = (
-            label_start + (label_end - label_start) / 2
-            if label_start < label_end
-            else start + (end - start) / 2
-        )
         nearest_event = min(
             timeline,
             key=lambda row: abs((date.fromisoformat(row["date"]) - today).days),
@@ -130,7 +123,6 @@ def portfolio_chart(snapshots: list[dict], *, today: date) -> alt.LayerChart | N
                 "岗位名称": job["role"],
                 "开始": start.isoformat(),
                 "结束": end.isoformat(),
-                "标签位置": label_at.isoformat(),
                 "当前进度": snapshot["stage"],
                 "最近事件": nearest_event.get("event_type") or "",
                 "最近事件日期": nearest_event.get("date") or "",
@@ -174,9 +166,52 @@ def portfolio_chart(snapshots: list[dict], *, today: date) -> alt.LayerChart | N
             "当前进度:N", "最近事件:N", "最近事件日期:N", "最近说明:N", "最近截止:N",
         ],
     )
-    labels = alt.Chart(data).mark_text(
-        clip=True, color="white", fontSize=12, fontWeight=600, baseline="middle"
-    ).encode(x=alt.X("标签位置:T", scale=x_scale), y=y_axis, text=alt.Text("当前进度:N"))
+    # The scale-bound interval exposes its current x domain through the
+    # selection parameter. Recalculate the center of each bar's visible
+    # intersection whenever the user pans or zooms, so the stage label follows
+    # the viewport until the complete bar leaves it.
+    labels = (
+        alt.Chart(data)
+        .transform_calculate(
+            _bar_start_ms="toNumber(toDate(datum['开始']))",
+            _bar_end_ms="toNumber(toDate(datum['结束']))",
+            _window_start_ms=(
+                "timeline_window && timeline_window['开始'] "
+                f"? toNumber(toDate(timeline_window['开始'][0])) "
+                f": toNumber(toDate('{visible_start.isoformat()}'))"
+            ),
+            _window_end_ms=(
+                "timeline_window && timeline_window['开始'] "
+                f"? toNumber(toDate(timeline_window['开始'][1])) "
+                f": toNumber(toDate('{visible_end.isoformat()}'))"
+            ),
+            _visible_start_ms=(
+                "datum._bar_start_ms > datum._window_start_ms "
+                "? datum._bar_start_ms : datum._window_start_ms"
+            ),
+            _visible_end_ms=(
+                "datum._bar_end_ms < datum._window_end_ms "
+                "? datum._bar_end_ms : datum._window_end_ms"
+            ),
+            _dynamic_label_at="toDate((datum._visible_start_ms + datum._visible_end_ms) / 2)",
+        )
+        .transform_filter(
+            "datum._bar_start_ms <= datum._window_end_ms "
+            "&& datum._bar_end_ms >= datum._window_start_ms"
+        )
+        .mark_text(
+            clip=True,
+            color="white",
+            fontSize=12,
+            fontWeight=700,
+            baseline="middle",
+        )
+        .encode(
+            x=alt.X("_dynamic_label_at:T", scale=x_scale),
+            y=y_axis,
+            text=alt.Text("当前进度:N"),
+        )
+    )
     today_line = alt.Chart(pd.DataFrame({"今天": [today.isoformat()]})).mark_rule(
         color="#E11D48", strokeDash=[6, 4], strokeWidth=3
     ).encode(
