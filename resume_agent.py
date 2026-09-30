@@ -19,6 +19,13 @@ class ResumeGenerationError(RuntimeError):
     """A user-facing resume generation failure."""
 
 
+class _ResumeEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claim: str
+    source_quote: str
+
+
 class _ResumeDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -26,6 +33,7 @@ class _ResumeDraft(BaseModel):
     match_analysis: list[str]
     missing_evidence: list[str]
     interview_focus: list[str]
+    evidence_map: list[_ResumeEvidence]
 
 
 RESUME_SKILL = get_skill("resume_generation")
@@ -91,6 +99,24 @@ def generate_resume_draft(
     if unsupported:
         raise ResumeGenerationError(
             "草稿出现基础简历未提供的数字，已阻止导入：" + "、".join(unsupported)
+        )
+    claims = {
+        item["claim"].strip(): item["source_quote"].strip()
+        for item in result["evidence_map"]
+    }
+    factual_lines = [
+        line.strip().lstrip("-* ").strip()
+        for line in draft.splitlines()
+        if line.strip() and not line.lstrip().startswith("#") and line.strip() != "---"
+    ]
+    unverified = [line for line in factual_lines if not claims.get(line)]
+    bad_quotes = [
+        claim for claim, quote in claims.items()
+        if quote not in source_resume or claim not in factual_lines
+    ]
+    if unverified or bad_quotes:
+        raise ResumeGenerationError(
+            "简历中存在未对应到基础简历原文的内容，已阻止导入；请重试并逐项核对。"
         )
     result["tailored_resume_markdown"] = draft
     return result

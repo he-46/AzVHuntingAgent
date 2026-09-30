@@ -105,6 +105,11 @@ def render_resume_workflow(
             st.write("**缺少证据，请勿直接写入简历**")
             for item in draft.get("missing_evidence") or []:
                 st.write(f"• {item}")
+        with st.expander("查看逐条原文依据"):
+            for item in draft.get("evidence_map") or []:
+                st.write(f"**{item['claim']}**")
+                st.caption(f"基础简历原文：{item['source_quote']}")
+            st.caption("手动修改草稿后，请重新核对改动内容的事实依据。")
         if draft.get("interview_focus"):
             with st.expander("建议准备的面试主题"):
                 for item in draft["interview_focus"]:

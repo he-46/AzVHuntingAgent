@@ -9,6 +9,29 @@ from job_agent.services.intake import save_reviewed_intake
 
 
 class IntakeServiceTests(unittest.TestCase):
+    def test_failed_event_rolls_back_job_and_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = str(Path(temporary) / "applications.db")
+            invalid_event = {
+                "event_type": "已投递",
+                "event_date": None,
+                "details": "",
+                "deadline_at": None,
+                "deadline_kind": None,
+                "feedback_score": None,
+                "source_quote": "",
+            }
+            with self.assertRaises(ValueError):
+                save_reviewed_intake(
+                    target="新建职位", company="示例公司", role="开发",
+                    company_info="", jd="", recruitment_start=None,
+                    recruitment_end=None, events=[invalid_event],
+                    source_text="岗位资料", db_path=db_path,
+                    candidate_profile={"name": "张三"},
+                )
+            self.assertEqual(database.list_applications(db_path), [])
+            self.assertIsNone(database.get_candidate_profile(db_path))
+
     def test_create_then_update_keeps_events_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")

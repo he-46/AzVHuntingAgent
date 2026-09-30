@@ -17,6 +17,7 @@ from job_agent.config import Settings
 from job_agent.llm.client import daily_usage_snapshot
 from job_agent.skills import list_skills
 from job_agent.services.intake import save_reviewed_intake, sync_recruitment_event
+from job_agent.ui.backup import render_backup_controls
 from job_agent.ui.llm_settings import configured_api_key, render_llm_settings
 from job_agent.ui.portfolio import (
     portfolio_chart as portfolio_chart_component,
@@ -532,9 +533,16 @@ def _unified_input(
             events=prepared_events,
             source_text=draft["source_text"],
             db_path=DB_PATH,
+            candidate_profile=(
+                profile
+                if any([
+                    profile["name"], profile["summary"], profile["education"],
+                    profile["experiences"], profile["internships"],
+                    profile["projects"], profile["skills"],
+                ])
+                else None
+            ),
         )
-        if any([profile["name"], profile["summary"], profile["education"], profile["experiences"], profile["internships"], profile["projects"], profile["skills"]]):
-            database.save_candidate_profile(profile, source_text=draft["source_text"], db_path=DB_PATH)
         st.session_state.pop("unified_draft", None)
         st.session_state["clear_unified_input"] = True
         st.session_state["flash_success"] = f"已保存职位资料，并导入 {imported} 条新事件。"
@@ -694,6 +702,11 @@ def main() -> None:
                 f"调用 {llm_usage['calls']} / {llm_usage['call_budget']} 次 · "
                 f"单次输入最多 {llm_usage['max_input_chars']:,} 字符"
             )
+            if llm_usage["reserved_calls"]:
+                st.caption(
+                    f"其中 {llm_usage['reserved_calls']} 次请求暂未取得实际用量，"
+                    f"已预留 {llm_usage['reserved_tokens']:,} tokens。"
+                )
         with st.expander("Agent Skills", expanded=False):
             for skill in list_skills():
                 st.write(f"**{skill.title}**")
@@ -703,6 +716,7 @@ def main() -> None:
                 )
                 st.caption(f"{limits} · 输出 ≤ {skill.max_output_tokens:,} tokens")
                 st.caption("发送给模型：" + "、".join(skill.external_data))
+        render_backup_controls(DB_PATH)
         if jobs:
             job_by_id = {job["id"]: job for job in jobs}
             selected_id = st.selectbox(

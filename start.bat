@@ -31,7 +31,7 @@ if errorlevel 1 (
 echo [3/3] 正在启动求职时间线 Agent...
 echo 浏览器地址：http://127.0.0.1:8505
 echo 关闭本窗口或按 Ctrl+C 可停止服务。
-"%VENV_PYTHON%" -m streamlit run app.py --server.port 8505
+"%VENV_PYTHON%" -m streamlit run app.py --server.address 127.0.0.1 --server.port 8505
 if errorlevel 1 goto :error
 goto :end
 

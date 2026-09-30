@@ -6,4 +6,5 @@ __pycache__/
 .streamlit/secrets.toml
 data/*.db
 data/*.db-*
+data/backups/
 .env

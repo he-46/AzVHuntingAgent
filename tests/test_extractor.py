@@ -2,8 +2,10 @@
 
 import os
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from extractor import ExtractionError, _JobInfo, extract_job_info
@@ -35,8 +37,15 @@ class ExtractionTests(unittest.TestCase):
         fake_openai = types.SimpleNamespace(
             OpenAI=lambda **kwargs: types.SimpleNamespace(responses=responses)
         )
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "OPENAI_MODEL": "gpt-4o-mini"}):
-            with patch.dict(sys.modules, {"openai": fake_openai}):
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.dict(
+                os.environ,
+                {
+                    "OPENAI_API_KEY": "test-key",
+                    "OPENAI_MODEL": "gpt-4o-mini",
+                    "JOB_AGENT_DB_PATH": str(Path(temporary) / "usage.db"),
+                },
+            ), patch.dict(sys.modules, {"openai": fake_openai}):
                 result = extract_job_info(text, reference_date)
         return result, responses.kwargs
 

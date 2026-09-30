@@ -6,6 +6,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+import database
 from database import (
     add_event,
     add_intake_entry,
@@ -26,6 +27,21 @@ from database import (
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_backup_restore_preserves_data_and_saves_previous_database(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = str(Path(temporary) / "applications.db")
+            first_id = database.create_application(company="原岗位", role="开发", db_path=db_path)
+            snapshot = database.backup_database(db_path)
+            database.create_application(company="后来岗位", role="测试", db_path=db_path)
+            self.assertEqual(database.inspect_backup(snapshot)["applications"], 1)
+            previous = database.restore_database(snapshot, db_path)
+            self.assertTrue(previous.exists())
+            self.assertEqual([job["id"] for job in database.list_applications(db_path)], [first_id])
+            self.assertEqual(database.inspect_backup(previous.read_bytes())["applications"], 2)
+            with self.assertRaises(ValueError):
+                database.restore_database(b"invalid", db_path)
+            self.assertEqual(len(database.list_applications(db_path)), 1)
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "nested" / "test.db"
@@ -95,7 +111,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(list_intake_entries(application_id, self.db_path)[0]["id"], entry_id)
         with closing(sqlite3.connect(self.db_path)) as conn:
             versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
-        self.assertEqual(versions, [1, 2, 3, 4, 5])
+            self.assertEqual(versions, [1, 2, 3, 4, 5, 6])
 
     def test_candidate_profile_round_trip(self):
         save_candidate_profile(

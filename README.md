@@ -23,14 +23,14 @@
 
 需要 Python 3.12 或更新版本。在项目目录执行：
 
-Windows 可以直接双击根目录的 `start.bat`。脚本会自动创建虚拟环境、按需安装依赖，并在 `http://127.0.0.1:8505` 启动应用。
+Windows 可以直接双击根目录的 `start.bat`。脚本会自动创建虚拟环境、按需安装依赖，并只在本机的 `http://127.0.0.1:8505` 启动应用。
 
 也可以在 PowerShell 中手动执行：
 
 ```powershell
 python -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-& .\.venv\Scripts\python.exe -m streamlit run app.py
+& .\.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1 --server.port 8505
 ```
 
 若当前电脑的 `python` 命令不可用，可在第一行使用已安装 Python 的完整路径。打开终端显示的本地地址即可使用。数据保存在 `data/applications.db`。
@@ -40,10 +40,10 @@ python -m venv .venv
 ```powershell
 $env:OPENAI_API_KEY = "你的 API Key"
 # 可选：$env:OPENAI_MODEL = "gpt-4o-mini"
-& .\.venv\Scripts\python.exe -m streamlit run app.py
+& .\.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1 --server.port 8505
 ```
 
-点击提取时，粘贴的简历或招聘文本会发送至配置的模型服务。密钥只放在环境变量中，不要写进数据库或提交到代码仓库。未写明完整年月日的时间不会自动成为正式截止日期，需要手动确认。
+点击提取时，粘贴的简历或招聘文本会发送至配置的模型服务。密钥可通过环境变量或网页会话配置，不要提交到代码仓库。未写明完整年月日的时间不会自动成为正式截止日期，需要手动确认。
 
 简历制作使用同一组 `OPENAI_API_KEY` 和 `OPENAI_MODEL`。点击生成时，基础简历、当前岗位 JD 和公司信息会发送至模型服务；生成内容先进入编辑区，只有点击保存后才会写入本地数据库。
 
@@ -60,7 +60,11 @@ $env:LLM_MAX_CALLS_PER_DAY = "30"            # 每日成功调用次数
 $env:LLM_DUPLICATE_WINDOW_SECONDS = "60"     # 相同请求冷却时间
 ```
 
-招聘信息分拣额外限制为 30,000 字符和最多 3,000 输出 Token；定制简历限制基础简历 20,000 字符、JD 15,000 字符和最多 4,000 输出 Token。侧栏“AI 用量与限制”显示模型返回的实际 Token 用量。达到任一限制后，请求会在调用模型前停止。
+招聘信息分拣额外限制为 30,000 字符和最多 3,000 输出 Token；定制简历限制基础简历 20,000 字符、JD 15,000 字符和最多 4,000 输出 Token。请求前会在 SQLite 中原子预留额度，按输入字符数的两倍加输出上限估算；成功后按模型返回的实际用量结算。失败或没有返回用量的请求会保留预留额度至当天结束。侧栏显示实际用量与预留量。模型服务的计费由服务商决定，本地额度是保守的使用控制，不代表账单硬上限。
+
+### 数据备份与恢复
+
+侧栏“数据备份与恢复”可下载完整 SQLite 数据库。上传 `.db` 备份后，应用先检查文件完整性并显示岗位、事件数量；确认后才会替换当前数据。恢复前的数据会自动保存到 `data/backups/`，此目录不会提交到 Git。备份包含简历和原始输入，应自行妥善保管。
 
 ## 数据口径
 
@@ -80,6 +84,7 @@ job_agent/skills/              能力规格、提示词和显式注册表
 job_agent/services/intake.py   确认招聘草稿的应用用例
 job_agent/ui/portfolio.py      全局岗位时间线界面
 job_agent/ui/resume.py         简历制作界面
+job_agent/ui/backup.py         数据备份与恢复界面
 job_agent/ui/styles.py         页面主题样式
 tests/                         单元测试与 Streamlit 冒烟测试
 ```
@@ -90,7 +95,7 @@ UI 通过服务层执行跨实体流程；LLM 功能共用同一个客户端入�
 
 `job_agent/skills/` 是应用内部的能力层。当前注册“信息分拣”和“岗位定制简历”两个能力。每个 Skill 声明输入字符限制、输出 Token 上限、超时和会发送给模型的数据；提示词与能力配置放在一起，确定性核验仍留在业务模块。
 
-注册表只显式导入经过审查的模块，不扫描目录或动态执行文件。Word/PDF 导入、DOCX/PDF 导出会在完成解析、格式校验和界面流程后再注册为可用 Skill。
+注册表只显式导入经过审查的模块，不扫描目录或动态执行文件。定制简历现在要求模型为每条事实陈述返回基础简历中的逐字原文依据；用户仍需核对表述含义。Word/PDF 导入、DOCX/PDF 导出会在完成解析、格式校验和界面流程后再注册为可用 Skill。
 
 ## 验证
 

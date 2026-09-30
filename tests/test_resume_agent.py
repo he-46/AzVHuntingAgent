@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -19,6 +21,15 @@ def _fake_openai(result: dict):
 
 
 class ResumeAgentTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        environment = patch.dict(
+            os.environ, {"JOB_AGENT_DB_PATH": str(Path(temporary.name) / "usage.db")}
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def test_missing_key_is_actionable(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(ResumeGenerationError, "OPENAI_API_KEY"):
@@ -35,6 +46,7 @@ class ResumeAgentTests(unittest.TestCase):
             "match_analysis": ["Python 与岗位匹配"],
             "missing_evidence": ["没有云平台经历"],
             "interview_focus": ["准备 Python 项目细节"],
+            "evidence_map": [{"claim": "Python 3 年", "source_quote": "Python 3 年经验"}],
         }
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), patch.dict(
             sys.modules, {"openai": _fake_openai(result)}
@@ -48,12 +60,30 @@ class ResumeAgentTests(unittest.TestCase):
         self.assertIn("Python 3 年", draft["tailored_resume_markdown"])
         self.assertEqual(draft["missing_evidence"], ["没有云平台经历"])
 
+    def test_rejects_claim_without_source_quote(self) -> None:
+        result = {
+            "tailored_resume_markdown": "# 张三\n- 熟悉 Python",
+            "match_analysis": [],
+            "missing_evidence": [],
+            "interview_focus": [],
+            "evidence_map": [{"claim": "熟悉 Python", "source_quote": "虚构的原文"}],
+        }
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), patch.dict(
+            sys.modules, {"openai": _fake_openai(result)}
+        ):
+            with self.assertRaisesRegex(ResumeGenerationError, "原文"):
+                generate_resume_draft(
+                    source_resume="张三，会 Python",
+                    company="示例公司", role="开发", jd="需要 Python",
+                )
+
     def test_blocks_numbers_not_found_in_source_resume(self) -> None:
         result = {
             "tailored_resume_markdown": "# 简历\n提升效率 50%",
             "match_analysis": [],
             "missing_evidence": [],
             "interview_focus": [],
+            "evidence_map": [],
         }
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}), patch.dict(
             sys.modules, {"openai": _fake_openai(result)}

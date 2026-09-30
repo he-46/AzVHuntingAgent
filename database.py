@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
 
 DEFAULT_DB_PATH = "data/applications.db"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+_active_transaction: ContextVar[tuple[Path, sqlite3.Connection] | None] = ContextVar(
+    "active_database_transaction", default=None
+)
 EVENT_TYPES = frozenset(
     {
         "招聘开始",
@@ -48,7 +52,11 @@ EVENT_FIELDS = frozenset(
 
 @contextmanager
 def _connection(db_path: str | Path) -> Iterator[sqlite3.Connection]:
-    path = Path(db_path)
+    path = Path(db_path).resolve()
+    active = _active_transaction.get()
+    if active is not None and active[0] == path:
+        yield active[1]
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -65,6 +73,9 @@ def _connection(db_path: str | Path) -> Iterator[sqlite3.Connection]:
 
 def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> None:
     """Create the database if needed; safe to call more than once."""
+    active = _active_transaction.get()
+    if active is not None and active[0] == Path(db_path).resolve():
+        return
     with _connection(db_path) as conn:
         conn.executescript(
             """
@@ -145,6 +156,17 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_llm_usage_created
                 ON llm_usage(created_at, operation);
+            CREATE TABLE IF NOT EXISTS llm_reservations (
+                id INTEGER PRIMARY KEY,
+                operation TEXT NOT NULL,
+                model TEXT NOT NULL,
+                reserved_tokens INTEGER NOT NULL,
+                request_hash TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_llm_reservations_created
+                ON llm_reservations(created_at, request_hash);
             """
         )
         columns = {
@@ -158,6 +180,76 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
             [(version,) for version in range(1, SCHEMA_VERSION + 1)],
         )
+
+
+@contextmanager
+def atomic(db_path: str | Path = DEFAULT_DB_PATH) -> Iterator[None]:
+    """Run existing repository calls in one SQLite transaction."""
+    path = Path(db_path).resolve()
+    if _active_transaction.get() is not None:
+        raise RuntimeError("不支持嵌套数据库事务")
+    init_db(path)
+    with _connection(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        token = _active_transaction.set((path, conn))
+        try:
+            yield
+        finally:
+            _active_transaction.reset(token)
+
+
+def backup_database(db_path: str | Path = DEFAULT_DB_PATH) -> bytes:
+    """Return a consistent SQLite snapshot suitable for download."""
+    init_db(db_path)
+    with closing(sqlite3.connect(Path(db_path).resolve())) as source:
+        with closing(sqlite3.connect(":memory:")) as snapshot:
+            source.backup(snapshot)
+            return snapshot.serialize()
+
+
+def inspect_backup(data: bytes) -> dict[str, int]:
+    """Validate a backup and summarize its user data before restore."""
+    if not data or len(data) > 100_000_000:
+        raise ValueError("备份文件为空或超过 100 MB。")
+    try:
+        with closing(sqlite3.connect(":memory:")) as source:
+            source.deserialize(data)
+            if source.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise ValueError("备份文件未通过完整性检查。")
+            required = {"applications", "events", "candidate_profile", "schema_migrations"}
+            present = {
+                row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            if not required.issubset(present):
+                raise ValueError("这不是本项目的完整数据库备份。")
+            version = source.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()[0]
+            if int(version) > SCHEMA_VERSION:
+                raise ValueError("备份由较新版本创建，当前程序无法恢复。")
+            if source.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise ValueError("备份中的岗位和事件关联不完整。")
+            return {
+                "applications": source.execute("SELECT COUNT(*) FROM applications").fetchone()[0],
+                "events": source.execute("SELECT COUNT(*) FROM events").fetchone()[0],
+            }
+    except sqlite3.DatabaseError as exc:
+        raise ValueError("无法读取 SQLite 备份文件。") from exc
+
+
+def restore_database(data: bytes, db_path: str | Path = DEFAULT_DB_PATH) -> Path:
+    """Validate and restore a backup, saving the current database first."""
+    inspect_backup(data)
+    target = Path(db_path).resolve()
+    init_db(target)
+    backup_dir = target.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    before_restore = backup_dir / f"before-restore-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.db"
+    with closing(sqlite3.connect(target)) as current, closing(sqlite3.connect(before_restore)) as old_copy:
+        current.backup(old_copy)
+    with closing(sqlite3.connect(":memory:")) as source, closing(sqlite3.connect(target)) as destination:
+        source.deserialize(data)
+        source.backup(destination)
+    init_db(target)
+    return before_restore
 
 
 def _iso_date(value: str | date | datetime | None, *, optional: bool) -> str | None:
@@ -539,7 +631,22 @@ def llm_usage_summary(
                WHERE datetime(created_at) >= datetime(?)""",
             (since.isoformat(),),
         ).fetchone()
-    return {key: int(row[key]) for key in ("calls", "input_tokens", "output_tokens", "total_tokens")}
+        reserved = conn.execute(
+            """SELECT COUNT(*) AS calls,
+                      COALESCE(SUM(reserved_tokens), 0) AS tokens
+               FROM llm_reservations
+               WHERE datetime(created_at) >= datetime(?)""",
+            (since.isoformat(),),
+        ).fetchone()
+    return {
+        "calls": int(row["calls"]) + int(reserved["calls"]),
+        "successful_calls": int(row["calls"]),
+        "reserved_calls": int(reserved["calls"]),
+        "input_tokens": int(row["input_tokens"]),
+        "output_tokens": int(row["output_tokens"]),
+        "reserved_tokens": int(reserved["tokens"]),
+        "total_tokens": int(row["total_tokens"]) + int(reserved["tokens"]),
+    }
 
 
 def has_recent_llm_request(
@@ -552,13 +659,94 @@ def has_recent_llm_request(
     init_db(db_path)
     with _connection(db_path) as conn:
         row = conn.execute(
-            """SELECT 1 FROM llm_usage
-               WHERE request_hash = ?
-                 AND datetime(created_at) >= datetime('now', ?)
+            """SELECT 1 FROM (
+                   SELECT request_hash, created_at FROM llm_usage
+                   UNION ALL
+                   SELECT request_hash, created_at FROM llm_reservations
+               )
+               WHERE request_hash = ? AND datetime(created_at) >= datetime('now', ?)
                LIMIT 1""",
             (request_hash, f"-{int(seconds)} seconds"),
         ).fetchone()
     return row is not None
+
+
+def reserve_llm_call(
+    *,
+    operation: str,
+    model: str,
+    request_hash: str,
+    reserved_tokens: int,
+    since: datetime,
+    token_budget: int,
+    call_budget: int,
+    duplicate_window_seconds: int,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> int:
+    """Atomically reserve daily call and token capacity before an API request."""
+    with atomic(db_path):
+        usage = llm_usage_summary(since=since, db_path=db_path)
+        if usage["calls"] >= call_budget:
+            raise ValueError(f"今天已经调用或预留 {usage['calls']} 次，达到每日上限 {call_budget} 次")
+        if usage["total_tokens"] + reserved_tokens > token_budget:
+            remaining = max(0, token_budget - usage["total_tokens"])
+            raise ValueError(
+                f"本次请求预留 {reserved_tokens} tokens，今日预算仅剩 {remaining} tokens"
+            )
+        if has_recent_llm_request(
+            request_hash,
+            seconds=duplicate_window_seconds,
+            db_path=db_path,
+        ):
+            raise ValueError(f"相同请求刚刚已经执行，请等待 {duplicate_window_seconds} 秒后再试")
+        with _connection(db_path) as conn:
+            cursor = conn.execute(
+                """INSERT INTO llm_reservations
+                    (operation, model, reserved_tokens, request_hash)
+                   VALUES (?, ?, ?, ?)""",
+                (operation, model, reserved_tokens, request_hash),
+            )
+            return int(cursor.lastrowid)
+
+
+def settle_llm_call(
+    reservation_id: int,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> None:
+    """Replace a reservation with the provider's actual usage atomically."""
+    with atomic(db_path):
+        with _connection(db_path) as conn:
+            reserved = conn.execute(
+                "SELECT * FROM llm_reservations WHERE id = ?", (reservation_id,)
+            ).fetchone()
+            if reserved is None:
+                raise ValueError("模型请求预留记录不存在")
+            conn.execute(
+                """INSERT INTO llm_usage
+                    (operation, model, input_tokens, output_tokens, total_tokens, request_hash)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    reserved["operation"], reserved["model"],
+                    max(0, int(input_tokens)), max(0, int(output_tokens)),
+                    max(0, int(total_tokens)), reserved["request_hash"],
+                ),
+            )
+            conn.execute("DELETE FROM llm_reservations WHERE id = ?", (reservation_id,))
+
+
+def mark_llm_call_failed(
+    reservation_id: int, db_path: str | Path = DEFAULT_DB_PATH
+) -> None:
+    """Keep a conservative reservation when the provider's usage is unknown."""
+    with _connection(db_path) as conn:
+        conn.execute(
+            "UPDATE llm_reservations SET status = 'failed' WHERE id = ?",
+            (reservation_id,),
+        )
 
 
 def add_event(

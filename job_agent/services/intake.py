@@ -40,7 +40,7 @@ def _sync_recruitment_event(
             database.delete_event(event["id"], db_path=db_path)
 
 
-def save_reviewed_intake(
+def _save_reviewed_intake_unchecked(
     *,
     target: str | int,
     company: str,
@@ -124,6 +124,41 @@ def save_reviewed_intake(
         imported += 1
     database.add_intake_entry(application_id, source_text, db_path=db_path)
     return application_id, imported
+
+
+def save_reviewed_intake(
+    *,
+    target: str | int,
+    company: str,
+    role: str,
+    company_info: str,
+    jd: str,
+    recruitment_start: str | None,
+    recruitment_end: str | None,
+    events: list[dict],
+    source_text: str,
+    db_path: str,
+    candidate_profile: dict | None = None,
+) -> tuple[int, int]:
+    """Save the reviewed job, events, source and profile as one unit."""
+    with database.atomic(db_path):
+        result = _save_reviewed_intake_unchecked(
+            target=target,
+            company=company,
+            role=role,
+            company_info=company_info,
+            jd=jd,
+            recruitment_start=recruitment_start,
+            recruitment_end=recruitment_end,
+            events=events,
+            source_text=source_text,
+            db_path=db_path,
+        )
+        if candidate_profile is not None:
+            database.save_candidate_profile(
+                candidate_profile, source_text=source_text, db_path=db_path
+            )
+        return result
 
 
 def sync_recruitment_event(
