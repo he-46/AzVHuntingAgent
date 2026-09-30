@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import re
+
 import streamlit as st
 
 import database
+from job_agent.documents import (
+    DocumentError,
+    export_resume_docx,
+    export_resume_pdf,
+    extract_document_text,
+)
 from resume_agent import ResumeGenerationError, generate_resume_draft
 
 
@@ -30,6 +38,25 @@ def _candidate_profile_markdown(profile: dict | None) -> str:
     return "\n\n".join(sections)
 
 
+def _import_base_resume(source_key: str, upload_key: str, notice_key: str) -> None:
+    upload = st.session_state.get(upload_key)
+    if upload is None:
+        st.session_state[notice_key] = ("error", "请先选择简历文件。")
+        return
+    try:
+        st.session_state[source_key] = extract_document_text(
+            upload.name, upload.getvalue(), max_chars=20_000
+        )
+    except DocumentError as exc:
+        st.session_state[notice_key] = ("error", str(exc))
+        return
+    st.session_state[notice_key] = ("success", "简历文字已导入，请核对后再生成定制简历。")
+
+
+def _safe_resume_filename(company: str, role: str) -> str:
+    return re.sub(r'[\\/:*?"<>|]', "_", f"{company}_{role}_定制简历")
+
+
 def render_resume_workflow(
     job: dict,
     *,
@@ -42,6 +69,8 @@ def render_resume_workflow(
     source_key = f"resume_source_{application_id}"
     draft_key = f"resume_draft_{application_id}"
     editor_key = f"resume_editor_{application_id}"
+    upload_key = f"resume_upload_{application_id}"
+    notice_key = f"resume_import_notice_{application_id}"
     if source_key not in st.session_state:
         st.session_state[source_key] = (
             versions[0]["source_resume"]
@@ -63,6 +92,19 @@ def render_resume_workflow(
     )
     with st.container(border=True):
         st.caption(f"当前目标：{job['company']} · {job['role']}")
+        st.file_uploader(
+            "导入基础简历（Word / PDF）", type=["docx", "pdf"], key=upload_key,
+        )
+        st.button(
+            "将文件文字放入基础简历",
+            key=f"import_resume_{application_id}",
+            on_click=_import_base_resume,
+            args=(source_key, upload_key, notice_key),
+            use_container_width=True,
+        )
+        notice = st.session_state.pop(notice_key, None)
+        if notice:
+            getattr(st, notice[0])(notice[1])
         source_resume = st.text_area(
             "基础简历",
             height=260,
@@ -132,22 +174,69 @@ def render_resume_workflow(
         download_column.download_button(
             "下载 Markdown",
             data=tailored_resume.encode("utf-8"),
-            file_name=f"{job['company']}_{job['role']}_定制简历.md",
+            file_name=f"{_safe_resume_filename(job['company'], job['role'])}.md",
             mime="text/markdown",
             use_container_width=True,
             key=f"download_resume_{application_id}",
         )
+        docx_column, pdf_column = st.columns(2)
+        filename = _safe_resume_filename(job["company"], job["role"])
+        try:
+            docx_data = export_resume_docx(tailored_resume)
+            docx_column.download_button(
+                "下载 Word",
+                data=docx_data,
+                file_name=f"{filename}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+                key=f"download_resume_docx_{application_id}",
+            )
+            pdf_data = export_resume_pdf(tailored_resume)
+            pdf_column.download_button(
+                "下载 PDF",
+                data=pdf_data,
+                file_name=f"{filename}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"download_resume_pdf_{application_id}",
+            )
+        except DocumentError as exc:
+            st.error(str(exc))
 
     if versions:
         with st.expander(f"已保存版本（{len(versions)}）"):
-            for version in versions:
-                st.markdown(f"**版本 #{version['id']} · {version['created_at']}**")
-                st.caption(version["match_analysis"] or "未保存匹配说明")
-                st.download_button(
-                    "下载此版本",
-                    data=version["tailored_resume"].encode("utf-8"),
-                    file_name=f"{job['company']}_{job['role']}_简历版本{version['id']}.md",
-                    mime="text/markdown",
-                    key=f"download_saved_resume_{version['id']}",
+            selected_version_id = st.selectbox(
+                "选择已保存版本",
+                [version["id"] for version in versions],
+                format_func=lambda version_id: next(
+                    f"版本 #{version['id']} · {version['created_at']}"
+                    for version in versions if version["id"] == version_id
+                ),
+                key=f"saved_resume_selection_{application_id}",
+            )
+            version = next(item for item in versions if item["id"] == selected_version_id)
+            st.caption(version["match_analysis"] or "未保存匹配说明")
+            filename = f"{_safe_resume_filename(job['company'], job['role'])}_版本{version['id']}"
+            markdown_column, word_column, pdf_column = st.columns(3)
+            markdown_column.download_button(
+                "下载 Markdown", data=version["tailored_resume"].encode("utf-8"),
+                file_name=f"{filename}.md", mime="text/markdown",
+                key=f"download_saved_resume_{version['id']}",
+                use_container_width=True,
+            )
+            try:
+                word_column.download_button(
+                    "下载 Word", data=export_resume_docx(version["tailored_resume"]),
+                    file_name=f"{filename}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key=f"download_saved_resume_docx_{version['id']}",
+                    use_container_width=True,
                 )
-                st.divider()
+                pdf_column.download_button(
+                    "下载 PDF", data=export_resume_pdf(version["tailored_resume"]),
+                    file_name=f"{filename}.pdf", mime="application/pdf",
+                    key=f"download_saved_resume_pdf_{version['id']}",
+                    use_container_width=True,
+                )
+            except DocumentError as exc:
+                st.error(str(exc))

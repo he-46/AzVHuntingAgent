@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import io
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -10,11 +11,37 @@ from pathlib import Path
 from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
+from docx import Document
 
 import database
 
 
 class AppSmokeTests(unittest.TestCase):
+    def test_docx_upload_populates_unified_input_before_ai_call(self) -> None:
+        document = Document()
+        document.add_paragraph("张三，统计学专业，掌握 Python 和 SQL。")
+        output = io.BytesIO()
+        document.save(output)
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = str(Path(temporary) / "applications.db")
+            with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}):
+                app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
+                uploader = next(
+                    widget for widget in app.file_uploader
+                    if widget.label == "导入 Word / PDF 文本"
+                )
+                uploader.upload("resume.docx", output.getvalue()).run()
+                next(
+                    button for button in app.button
+                    if button.label == "将文件文字加入总输入框"
+                ).click().run()
+                self.assertFalse(app.exception)
+                value = next(
+                    widget.value for widget in app.text_area
+                    if widget.label == "总输入框"
+                )
+                self.assertIn("张三，统计学专业", value)
+
     def test_resume_only_input_saves_candidate_profile(self) -> None:
         source = "张三，示例大学统计学。曾在零售公司实习。技能：Python、SQL。"
         extracted = {

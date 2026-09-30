@@ -14,8 +14,9 @@ import database
 import domain
 from extractor import ExtractionError, extract_job_info
 from job_agent.config import Settings
+from job_agent.documents import DocumentError, extract_document_text
 from job_agent.llm.client import daily_usage_snapshot
-from job_agent.skills import list_skills
+from job_agent.skills import list_local_document_skills, list_skills
 from job_agent.services.intake import save_reviewed_intake, sync_recruitment_event
 from job_agent.ui.backup import render_backup_controls
 from job_agent.ui.llm_settings import configured_api_key, render_llm_settings
@@ -132,6 +133,30 @@ def _rerun_after_change(application_id: int | None = None) -> None:
     if application_id is not None:
         st.session_state["pending_selection"] = application_id
     st.rerun()
+
+
+def _import_documents_to_unified_input() -> None:
+    uploads = st.session_state.get("unified_document_uploads") or []
+    if not uploads:
+        st.session_state["document_import_notice"] = ("error", "请先选择 Word 或 PDF 文件。")
+        return
+    if len(uploads) > 3:
+        st.session_state["document_import_notice"] = ("error", "每次最多导入 3 个文件。")
+        return
+    try:
+        sections = [
+            f"【文件：{upload.name}】\n{extract_document_text(upload.name, upload.getvalue())}"
+            for upload in uploads
+        ]
+        original = st.session_state.get("unified_input", "").strip()
+        combined = "\n\n".join(part for part in [original, *sections] if part)
+        if len(combined) > 30_000:
+            raise DocumentError("导入后超过 AI 分拣的 30,000 字符上限，请删减内容。")
+    except DocumentError as exc:
+        st.session_state["document_import_notice"] = ("error", str(exc))
+        return
+    st.session_state["unified_input"] = combined
+    st.session_state["document_import_notice"] = ("success", "文件文字已加入总输入框，请核对后再点击 AI 分拣。")
 
 
 def _sync_recruitment_event(application_id: int, event_type: str, event_date: str | None) -> None:
@@ -289,6 +314,21 @@ def _unified_input(
             ),
             key="unified_input",
         )
+        st.file_uploader(
+            "导入 Word / PDF 文本",
+            type=["docx", "pdf"],
+            accept_multiple_files=True,
+            key="unified_document_uploads",
+            help="文件仅在本地提取文字；点击 AI 分拣后才会发送输入框中的内容。",
+        )
+        st.button(
+            "将文件文字加入总输入框",
+            on_click=_import_documents_to_unified_input,
+            use_container_width=True,
+        )
+        notice = st.session_state.pop("document_import_notice", None)
+        if notice:
+            getattr(st, notice[0])(notice[1])
     with guide_column:
         st.markdown(
             """
@@ -716,6 +756,14 @@ def main() -> None:
                 )
                 st.caption(f"{limits} · 输出 ≤ {skill.max_output_tokens:,} tokens")
                 st.caption("发送给模型：" + "、".join(skill.external_data))
+            for skill in list_local_document_skills():
+                st.write(f"**{skill.title}**")
+                st.caption(skill.description)
+                size = (
+                    f" · 单文件 ≤ {skill.max_file_bytes // 1024 // 1024} MB"
+                    if skill.max_file_bytes else ""
+                )
+                st.caption("格式：" + "、".join(skill.formats) + size + " · 本地处理")
         render_backup_controls(DB_PATH)
         if jobs:
             job_by_id = {job["id"]: job for job in jobs}

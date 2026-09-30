@@ -13,4 +13,4 @@
 - `intake_extraction`：混合求职信息分拣；
 - `resume_generation`：基于证据的岗位定制简历。
 
-Word/PDF 导入和 DOCX/PDF 导出将在有实际解析、格式验证和界面流程后注册，避免把尚未实现的能力显示为可用。
+本地文档能力在 `documents.py` 中显式登记：Word/PDF 文字导入，以及定制简历 DOCX/PDF 导出。文件先在本机处理，只有用户点击 AI 分拣或简历生成后，相应输入文字才会发送给模型。

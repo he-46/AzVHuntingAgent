@@ -19,7 +19,7 @@ if not exist "%VENV_PYTHON%" (
     echo [1/3] 已找到虚拟环境。
 )
 
-"%VENV_PYTHON%" -c "import streamlit, altair, openai, pydantic, pandas" >nul 2>nul
+"%VENV_PYTHON%" -c "import streamlit, altair, openai, pydantic, pandas, docx, pypdf, reportlab" >nul 2>nul
 if errorlevel 1 (
     echo [2/3] 正在安装项目依赖...
     "%VENV_PYTHON%" -m pip install -r requirements.txt
