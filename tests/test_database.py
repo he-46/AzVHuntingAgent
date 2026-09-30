@@ -106,12 +106,29 @@ class DatabaseTests(unittest.TestCase):
                 conn.execute("INSERT INTO applications(company, role) VALUES ('旧公司', '旧岗位')")
         init_db(self.db_path)
         self.assertEqual(list_applications(self.db_path)[0]["company_info"], "")
+        self.assertEqual(list_applications(self.db_path)[0]["link_url"], "")
         application_id = list_applications(self.db_path)[0]["id"]
         entry_id = add_intake_entry(application_id, "旧申请的新输入", self.db_path)
         self.assertEqual(list_intake_entries(application_id, self.db_path)[0]["id"], entry_id)
         with closing(sqlite3.connect(self.db_path)) as conn:
             versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
-            self.assertEqual(versions, [1, 2, 3, 4, 5, 6])
+        self.assertEqual(versions, [1, 2, 3, 4, 5, 6, 7])
+
+    def test_recruitment_link_roundtrip_and_scheme_validation(self):
+        application_id = create_application(
+            "示例公司", "开发", db_path=self.db_path,
+            link_url="https://jobs.example.com/apply?id=1",
+        )
+        self.assertEqual(
+            get_application(application_id, self.db_path)["link_url"],
+            "https://jobs.example.com/apply?id=1",
+        )
+        with self.assertRaises(ValueError):
+            update_application(application_id, {"link_url": "javascript:alert(1)"}, self.db_path)
+        self.assertEqual(
+            get_application(application_id, self.db_path)["link_url"],
+            "https://jobs.example.com/apply?id=1",
+        )
 
     def test_candidate_profile_round_trip(self):
         save_candidate_profile(

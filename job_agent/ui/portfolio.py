@@ -283,6 +283,9 @@ def render_portfolio_overview(
             col1.metric("当前进度", snapshot["stage"])
             col2.metric("最近节点", snapshot["focus_time"])
             col3.metric("机会评估", snapshot["outlook"].get("level", "信息不足"))
+            if job.get("link_url"):
+                st.link_button("打开招聘 / 投递链接", job["link_url"])
+                st.caption("请在原网站核对岗位与截止时间。")
             if job.get("company_info"):
                 st.write("**公司信息**")
                 st.write(job["company_info"])

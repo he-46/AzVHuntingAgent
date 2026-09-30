@@ -17,6 +17,57 @@ import database
 
 
 class AppSmokeTests(unittest.TestCase):
+    def test_multi_job_draft_saves_links_without_unassigned_event(self) -> None:
+        source = (
+            "甲公司招聘算法工程师，链接 https://jobs.example.com/a。"
+            "乙公司招聘数据分析师，链接 https://jobs.example.com/b。"
+            "2026年10月15日完成一面，尚不清楚属于哪个岗位。"
+        )
+        def job(company, role, link):
+            return {
+                "company": company, "role": role,
+                "company_info": "", "jd": "",
+                "recruitment_start": None, "recruitment_end": None,
+                "link_url": link, "events": [],
+                "evidence": {},
+            }
+        extracted = {
+            "jobs": [
+                job("甲公司", "算法工程师", "https://jobs.example.com/a"),
+                job("乙公司", "数据分析师", "https://jobs.example.com/b"),
+            ],
+            "unassigned_events": [{
+                "event_type": "面试完成", "event_date": "2026-10-15",
+                "details": "完成一面", "deadline_at": None,
+                "deadline_kind": None, "feedback_score": None,
+                "source_quote": "2026年10月15日完成一面",
+            }],
+            "candidate_profile": {},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = str(Path(temporary) / "applications.db")
+            with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
+                "extractor.extract_intake", return_value=extracted
+            ):
+                app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
+                next(widget for widget in app.text_area if widget.label == "总输入框").set_value(source)
+                next(button for button in app.button if button.label == "AI 分拣信息").click().run()
+                next(button for button in app.button if button.label == "确认保存当前岗位与时间线").click().run()
+                self.assertFalse(app.exception)
+                next(button for button in app.button if button.label == "确认保存当前岗位与时间线").click().run()
+                self.assertFalse(app.exception)
+                app.get_by_key("draft_job_choice_1").set_value(1).run()
+                next(button for button in app.button if button.label == "确认保存当前岗位与时间线").click().run()
+                self.assertFalse(app.exception)
+            jobs = database.list_applications(db_path)
+            self.assertEqual(len(jobs), 2)
+            self.assertEqual({job["link_url"] for job in jobs}, {
+                "https://jobs.example.com/a", "https://jobs.example.com/b",
+            })
+            self.assertEqual(
+                sum(len(database.list_events(job["id"], db_path)) for job in jobs), 0
+            )
+
     def test_docx_upload_populates_unified_input_before_ai_call(self) -> None:
         document = Document()
         document.add_paragraph("张三，统计学专业，掌握 Python 和 SQL。")
@@ -45,13 +96,8 @@ class AppSmokeTests(unittest.TestCase):
     def test_resume_only_input_saves_candidate_profile(self) -> None:
         source = "张三，示例大学统计学。曾在零售公司实习。技能：Python、SQL。"
         extracted = {
-            "company": "",
-            "role": "",
-            "company_info": "",
-            "jd": "",
-            "recruitment_start": None,
-            "recruitment_end": None,
-            "events": [],
+            "jobs": [],
+            "unassigned_events": [],
             "candidate_profile": {
                 "name": "张三",
                 "summary": "",
@@ -65,7 +111,7 @@ class AppSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")
             with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
-                "extractor.extract_job_info", return_value=extracted
+                "extractor.extract_intake", return_value=extracted
             ):
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
                 next(widget for widget in app.text_area if widget.label == "总输入框").set_value(source)
@@ -122,13 +168,14 @@ class AppSmokeTests(unittest.TestCase):
             "招聘开始：2026年9月1日，投递截止：2026年10月15日。"
             "我在2026年9月20日投递。"
         )
-        extracted = {
+        job = {
             "company": "星辰科技",
             "role": "数据分析师",
             "company_info": "公司专注零售数据。",
             "jd": "JD：负责业务指标分析。",
             "recruitment_start": "2026-09-01",
             "recruitment_end": "2026-10-15",
+            "link_url": "https://jobs.example.com/analyst",
             "events": [
                 {
                     "event_type": "已投递",
@@ -141,10 +188,11 @@ class AppSmokeTests(unittest.TestCase):
                 }
             ],
         }
+        extracted = {"jobs": [job], "unassigned_events": [], "candidate_profile": {}}
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")
             with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
-                "extractor.extract_job_info", return_value=extracted
+                "extractor.extract_intake", return_value=extracted
             ):
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
                 next(widget for widget in app.text_area if widget.label == "总输入框").set_value(source)
@@ -152,7 +200,7 @@ class AppSmokeTests(unittest.TestCase):
                 self.assertFalse(app.exception)
                 self.assertEqual(app.get_by_key("draft_company_1").value, "星辰科技")
                 self.assertEqual(app.get_by_key("draft_role_1").value, "数据分析师")
-                next(button for button in app.button if button.label == "确认写入时间线").click().run()
+                next(button for button in app.button if button.label == "确认保存当前岗位与时间线").click().run()
                 self.assertFalse(app.exception)
 
                 # Reprocessing the same source should update the matched job and
@@ -160,13 +208,14 @@ class AppSmokeTests(unittest.TestCase):
                 next(widget for widget in app.text_area if widget.label == "总输入框").set_value(source)
                 next(button for button in app.button if button.label == "AI 分拣信息").click().run()
                 self.assertEqual(app.get_by_key("draft_target_2").value, 1)
-                next(button for button in app.button if button.label == "确认写入时间线").click().run()
+                next(button for button in app.button if button.label == "确认保存当前岗位与时间线").click().run()
                 self.assertFalse(app.exception)
 
             jobs = database.list_applications(db_path=db_path)
             self.assertEqual(len(jobs), 1)
             self.assertEqual(jobs[0]["company_info"], "公司专注零售数据。")
             self.assertEqual(jobs[0]["jd"], "JD：负责业务指标分析。")
+            self.assertEqual(jobs[0]["link_url"], "https://jobs.example.com/analyst")
             self.assertEqual(len(database.list_intake_entries(jobs[0]["id"], db_path=db_path)), 2)
             self.assertEqual(
                 {event["event_type"] for event in database.list_events(jobs[0]["id"], db_path=db_path)},

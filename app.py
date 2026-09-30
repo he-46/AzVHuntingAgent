@@ -12,10 +12,11 @@ import streamlit as st
 
 import database
 import domain
-from extractor import ExtractionError, extract_job_info
+from extractor import ExtractionError, extract_intake
 from job_agent.config import Settings
 from job_agent.documents import DocumentError, extract_document_text
 from job_agent.llm.client import daily_usage_snapshot
+from job_agent.links import validate_link_url
 from job_agent.skills import list_local_document_skills, list_skills
 from job_agent.services.intake import save_reviewed_intake, sync_recruitment_event
 from job_agent.ui.backup import render_backup_controls
@@ -180,6 +181,7 @@ def _create_job(*, first_job: bool) -> None:
             role = st.text_input("岗位 *")
             recruitment_start = st.text_input("招聘开始日期", placeholder="YYYY-MM-DD，可空")
             recruitment_end = st.text_input("投递截止日期", placeholder="YYYY-MM-DD，可空")
+            link_url = st.text_input("招聘 / 投递链接（可选）", placeholder="https://...")
             company_info = st.text_area("公司信息（可选）", placeholder="招聘流程、官网公告或其他背景信息")
             jd = st.text_area("JD / 招聘公告", height=150)
             submitted = st.form_submit_button("创建职位", use_container_width=True)
@@ -199,6 +201,7 @@ def _create_job(*, first_job: bool) -> None:
                     jd=jd.strip(),
                     recruitment_start=start,
                     recruitment_end=end,
+                    link_url=link_url,
                     db_path=DB_PATH,
                 )
                 _sync_recruitment_event(application_id, "招聘开始", start)
@@ -216,6 +219,7 @@ def _job_details(job: dict) -> None:
             role = st.text_input("岗位", value=job.get("role") or "")
             start = st.text_input("招聘开始日期", value=job.get("recruitment_start") or "")
             end = st.text_input("投递截止日期", value=job.get("recruitment_end") or "")
+            link_url = st.text_input("招聘 / 投递链接", value=job.get("link_url") or "")
             company_info = st.text_area("公司信息", value=job.get("company_info") or "", height=100)
             jd = st.text_area("JD / 招聘公告", value=job.get("jd") or "", height=180)
             saved = st.form_submit_button("保存岗位信息")
@@ -237,6 +241,7 @@ def _job_details(job: dict) -> None:
                             "jd": jd.strip(),
                             "recruitment_start": start_date,
                             "recruitment_end": end_date,
+                            "link_url": link_url,
                         },
                         db_path=DB_PATH,
                     )
@@ -298,7 +303,8 @@ def _unified_input(
 ) -> None:
     st.markdown('<div class="section-kicker">SMART INTAKE</div>', unsafe_allow_html=True)
     st.markdown("### 一次粘贴，AI 自动分拣")
-    st.caption("把简历、经历、技能、JD、招聘日期和面试消息写在同一个框里。AI 会分类生成草稿，由你核对后保存。")
+    st.caption("把简历、多个岗位、JD、招聘链接和面试消息写在同一个框里。AI 会分成岗位草稿，由你逐项核对后保存。")
+    st.caption("单次最多整理 6 个岗位；更多岗位请分批输入。")
     if st.session_state.pop("clear_unified_input", False):
         st.session_state["unified_input"] = ""
     input_column, guide_column = st.columns([3.35, 1], gap="medium")
@@ -340,6 +346,7 @@ def _unified_input(
               JD 或招聘公告<br>
               投递、测评、面试消息<br>
               截止日期与面试自评
+              <br>招聘公告或投递链接
             </div>
             """,
             unsafe_allow_html=True,
@@ -351,7 +358,7 @@ def _unified_input(
         else:
             try:
                 with st.spinner("正在分拣职位、日期和进度…"):
-                    result = extract_job_info(
+                    result = extract_intake(
                         source_text,
                         reference_date=TODAY.isoformat(),
                         api_key=api_key,
@@ -370,10 +377,33 @@ def _unified_input(
     if not draft:
         return
 
-    result = draft["result"]
+    batch = draft["result"]
     version = draft["version"]
     st.markdown("#### 核对分拣草稿")
-    target_options: list[str | int] = ["新建职位"] + [job["id"] for job in jobs]
+    st.caption("“原文匹配”只表示内容在输入中出现，仍需核对真假、岗位归属与截止时间。")
+    draft_jobs = batch.get("jobs") or []
+    if draft_jobs:
+        draft_index = st.selectbox(
+            "当前核对的岗位草稿",
+            range(len(draft_jobs)),
+            format_func=lambda index: (
+                f"{index + 1}. {draft_jobs[index].get('company') or '公司待确认'} · "
+                f"{draft_jobs[index].get('role') or '岗位待确认'}"
+                + (" · 已保存" if index in draft.get("saved_targets", {}) else "")
+            ),
+            key=f"draft_job_choice_{version}",
+        )
+        result = draft_jobs[draft_index]
+    else:
+        draft_index = None
+        result = {}
+        st.info("本次没有识别到明确岗位。可以先保存求职者资料，或手动创建岗位。")
+    widget_suffix = str(version) if draft_index in {None, 0} else f"{version}_{draft_index}"
+    saved_target = draft.get("saved_targets", {}).get(draft_index)
+    if saved_target is not None and not any(job["id"] == saved_target for job in jobs):
+        draft["saved_targets"].pop(draft_index, None)
+        saved_target = None
+    target_options: list[str | int] = ([] if saved_target else ["新建职位"]) + [job["id"] for job in jobs]
     matched_id = next(
         (
             job["id"]
@@ -385,7 +415,7 @@ def _unified_input(
         ),
         None,
     )
-    default_target = matched_id or (
+    default_target = saved_target or matched_id or (
         selected_id if selected_id is not None and not result.get("company") and not result.get("role") else "新建职位"
     )
     target = st.selectbox(
@@ -397,25 +427,35 @@ def _unified_input(
             if value == "新建职位"
             else next(f"更新：{job['company']} · {job['role']}" for job in jobs if job["id"] == value)
         ),
-        key=f"draft_target_{version}",
-    )
-    if target != "新建职位":
+        key=f"draft_target_{widget_suffix}",
+    ) if result else "新建职位"
+    if result and target != "新建职位":
         st.caption("更新已有职位时，空白的资料字段会保留原值。请确认保存位置与输入内容属于同一岗位。")
 
-    preview_rows = [
-        {
-            "导入": bool(item.get("event_date") or item.get("deadline_at")),
-            "event_type": item.get("event_type") or "其他",
-            "event_date": item.get("event_date") or "",
-            "details": item.get("details") or "",
-            "deadline_at": item.get("deadline_at") or "",
-            "deadline_kind": item.get("deadline_kind") or "",
-            "feedback_score": item.get("feedback_score"),
-            "source_quote": item.get("source_quote") or "",
-        }
-        for item in result.get("events") or []
+    event_labels = [
+        f"{index + 1}. {job.get('company') or '公司待确认'} · {job.get('role') or '岗位待确认'}"
+        for index, job in enumerate(draft_jobs)
     ]
-    candidate = result.get("candidate_profile") or {}
+    preview_rows = []
+    for owner, items in [
+        *[(event_labels[index], job.get("events") or []) for index, job in enumerate(draft_jobs)],
+        ("未确定归属", batch.get("unassigned_events") or []),
+    ]:
+        for item in items:
+            preview_rows.append({
+                "导入": owner != "未确定归属" and bool(item.get("event_date") or item.get("deadline_at")),
+                "岗位归属": owner,
+                "event_type": item.get("event_type") or "其他",
+                "event_date": item.get("event_date") or "",
+                "details": item.get("details") or "",
+                "deadline_at": item.get("deadline_at") or "",
+                "deadline_kind": item.get("deadline_kind") or "",
+                "feedback_score": item.get("feedback_score"),
+                "source_quote": item.get("source_quote") or "",
+                "核对状态": "原文匹配" if item.get("source_quote") else "待确认",
+                "人工确认": False,
+            })
+    candidate = batch.get("candidate_profile") or {}
     with st.form(f"review_unified_{version}"):
         st.write("**求职者资料**")
         candidate_name = st.text_input(
@@ -461,33 +501,71 @@ def _unified_input(
             key=f"draft_candidate_skills_{version}",
         )
         st.divider()
-        st.write("**岗位与招聘信息**")
-        col1, col2 = st.columns(2)
-        company = col1.text_input("公司", value=result.get("company") or "", key=f"draft_company_{version}")
-        role = col2.text_input("岗位", value=result.get("role") or "", key=f"draft_role_{version}")
-        col3, col4 = st.columns(2)
-        start = col3.text_input(
-            "招聘开始日期", value=result.get("recruitment_start") or "", key=f"draft_start_{version}"
-        )
-        end = col4.text_input(
-            "投递截止日期", value=result.get("recruitment_end") or "", key=f"draft_end_{version}"
-        )
-        company_info = st.text_area(
-            "公司信息", value=result.get("company_info") or "", height=100, key=f"draft_info_{version}"
-        )
-        jd = st.text_area("JD", value=result.get("jd") or "", height=140, key=f"draft_jd_{version}")
-        st.write("**时间线事件**")
-        edited_events = st.data_editor(
-            pd.DataFrame(preview_rows),
-            hide_index=True,
-            num_rows="fixed",
-            width="stretch",
-            key=f"draft_events_{version}",
-        )
-        st.caption("只有勾选“导入”的事件会写入时间线。日期不完整的事件可在这里补全后勾选。")
+        if result:
+            st.write("**岗位与招聘信息**")
+            evidence = result.get("evidence") or {}
+            col1, col2 = st.columns(2)
+            company = col1.text_input("公司", value=result.get("company") or "", key=f"draft_company_{widget_suffix}")
+            role = col2.text_input("岗位", value=result.get("role") or "", key=f"draft_role_{widget_suffix}")
+            for label, field in (("公司", "company"), ("岗位", "role")):
+                item = evidence.get(field) or {}
+                st.caption(f"{label}：{item.get('status', '待确认')} · 原文：{item.get('quote') or '未找到'}")
+            col3, col4 = st.columns(2)
+            start = col3.text_input(
+                "招聘开始日期", value=result.get("recruitment_start") or "", key=f"draft_start_{widget_suffix}"
+            )
+            end = col4.text_input(
+                "投递截止日期", value=result.get("recruitment_end") or "", key=f"draft_end_{widget_suffix}"
+            )
+            for label, field in (("招聘开始日期", "recruitment_start"), ("投递截止日期", "recruitment_end")):
+                item = evidence.get(field) or {}
+                st.caption(f"{label}：{item.get('status', '待确认')} · 原文：{item.get('quote') or '未找到'}")
+            link_url = st.text_input(
+                "招聘 / 投递链接", value=result.get("link_url") or "",
+                placeholder="https://...", key=f"draft_link_{widget_suffix}",
+            )
+            link_evidence = evidence.get("link_url") or {}
+            st.caption(
+                f"链接：{link_evidence.get('status', '待确认')} · "
+                f"原文：{link_evidence.get('quote') or '未找到'}。请自行核实网站身份。"
+            )
+            company_info = st.text_area(
+                "公司信息", value=result.get("company_info") or "", height=100, key=f"draft_info_{widget_suffix}"
+            )
+            jd = st.text_area("JD", value=result.get("jd") or "", height=140, key=f"draft_jd_{widget_suffix}")
+            for label, field in (("公司信息", "company_info"), ("JD", "jd")):
+                item = evidence.get(field) or {}
+                st.caption(f"{label}：{item.get('status', '待确认')}；请核对是否属于当前岗位。")
+            confirm_manual_dates = st.checkbox(
+                "我已核对手动填写或修改的日期与所属岗位",
+                key=f"draft_date_confirm_{widget_suffix}",
+            )
+        if preview_rows:
+            st.write("**时间线事件与岗位归属**")
+            edited_events = st.data_editor(
+                pd.DataFrame(preview_rows),
+                hide_index=True,
+                num_rows="fixed",
+                width="stretch",
+                key=f"draft_events_{version}",
+                disabled=["核对状态"],
+                column_config={
+                    "岗位归属": st.column_config.SelectboxColumn(
+                        "岗位归属", options=["未确定归属", *event_labels], required=True,
+                    ),
+                },
+            )
+            st.caption("未确定归属的事件默认不导入。改动归属、日期或事件类型时，请勾选“人工确认”；只有当前岗位且勾选“导入”的事件会保存。")
+        else:
+            edited_events = pd.DataFrame(preview_rows)
         profile_button, job_button = st.columns(2)
         profile_saved = profile_button.form_submit_button("仅保存求职者资料", use_container_width=True)
-        saved = job_button.form_submit_button("确认写入时间线", use_container_width=True)
+        saved = job_button.form_submit_button("确认保存当前岗位与时间线", use_container_width=True, disabled=not result)
+
+    if st.button("结束本次核对并清除草稿", key=f"finish_review_{version}"):
+        st.session_state.pop("unified_draft", None)
+        st.session_state["clear_unified_input"] = True
+        st.rerun()
 
     if not saved and not profile_saved:
         return
@@ -510,22 +588,38 @@ def _unified_input(
         }
         if profile_saved:
             database.save_candidate_profile(profile, source_text=draft["source_text"], db_path=DB_PATH)
-            st.session_state.pop("unified_draft", None)
-            st.session_state["clear_unified_input"] = True
-            st.session_state["flash_success"] = "求职者资料已保存，可用于岗位定制简历。"
+            if not draft_jobs:
+                st.session_state.pop("unified_draft", None)
+                st.session_state["clear_unified_input"] = True
+            st.session_state["flash_success"] = "求职者资料已保存；可继续核对岗位草稿。"
             _rerun_after_change()
 
         start_date = _date_or_none(start)
         end_date = _date_or_none(end)
+        if (
+            (start_date and start_date != result.get("recruitment_start"))
+            or (end_date and end_date != result.get("recruitment_end"))
+        ) and not confirm_manual_dates:
+            raise ValueError("手动填写或修改了日期，请先核对所属岗位并勾选确认。")
         if start_date and end_date and start_date > end_date:
             raise ValueError("投递截止日期不能早于招聘开始日期。")
         if target == "新建职位" and (not company.strip() or not role.strip()):
             raise ValueError("新建职位需要公司和岗位。请在草稿中补全。")
+        link_url = validate_link_url(link_url)
 
         prepared_events = []
-        for row in edited_events.to_dict("records"):
+        for index, row in enumerate(edited_events.to_dict("records")):
             if not bool(row.get("导入")):
                 continue
+            if _text(row.get("岗位归属")) != event_labels[draft_index]:
+                continue
+            original = preview_rows[index]
+            changed = any(
+                _text(row.get(field)) != _text(original.get(field))
+                for field in ("岗位归属", "event_type", "event_date", "deadline_at", "deadline_kind", "feedback_score")
+            )
+            if changed and not bool(row.get("人工确认")):
+                raise ValueError("修改事件归属、日期或类型后，请勾选该行的“人工确认”。")
             event_type = _text(row.get("event_type"))
             if event_type not in EVENT_TYPES:
                 raise ValueError(f"未知事件类型：{event_type}")
@@ -548,6 +642,8 @@ def _unified_input(
                     raise ValueError(f"“{event_type}”的面试自评需为 1–5 的整数，且只用于面试完成。")
                 score = int(score_number)
             quote = _text(row.get("source_quote"))
+            if not quote:
+                raise ValueError(f"“{event_type}”缺少原文依据；请取消导入，或通过手动录入添加。")
             if quote and quote not in draft["source_text"]:
                 raise ValueError(f"“{event_type}”的原文依据不在总输入中，请保留原文或清空该列。")
             prepared_events.append(
@@ -568,6 +664,7 @@ def _unified_input(
             role=role.strip(),
             company_info=company_info.strip(),
             jd=jd.strip(),
+            link_url=link_url,
             recruitment_start=start_date,
             recruitment_end=end_date,
             events=prepared_events,
@@ -583,9 +680,11 @@ def _unified_input(
                 else None
             ),
         )
-        st.session_state.pop("unified_draft", None)
-        st.session_state["clear_unified_input"] = True
-        st.session_state["flash_success"] = f"已保存职位资料，并导入 {imported} 条新事件。"
+        draft.setdefault("saved_targets", {})[draft_index] = application_id
+        st.session_state["flash_success"] = (
+            f"已保存第 {draft_index + 1} 个岗位，导入 {imported} 条新事件。"
+            "可继续切换并核对其他岗位草稿。"
+        )
         _rerun_after_change(application_id)
     except (ValueError, TypeError) as exc:
         st.error(str(exc))
@@ -802,6 +901,9 @@ def main() -> None:
     st.subheader(f"{job['company']} · {job['role']}")
     if job.get("recruitment_end"):
         st.caption(f"投递截止：{job['recruitment_end']}")
+    if job.get("link_url"):
+        st.link_button("打开招聘 / 投递链接", job["link_url"])
+        st.caption("打开后请核对网站身份、岗位和实际截止时间。")
     pending_deadlines = [
         row["deadline_at"]
         for row in timeline

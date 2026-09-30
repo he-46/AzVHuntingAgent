@@ -12,12 +12,17 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from job_agent.links import validate_link_url
+
 from job_agent.llm.client import (
     LLMConfigurationError,
     LLMRequestError,
     parse_structured,
 )
-from job_agent.skills.intake import SYSTEM_PROMPT as INTAKE_SYSTEM_PROMPT
+from job_agent.skills.intake import (
+    BATCH_SYSTEM_PROMPT,
+    SYSTEM_PROMPT as INTAKE_SYSTEM_PROMPT,
+)
 from job_agent.skills.registry import get_skill
 
 
@@ -79,6 +84,32 @@ class _JobInfo(BaseModel):
     recruitment_end: str | None
     events: list[_Event]
     candidate_profile: _CandidateProfile = Field(default_factory=_CandidateProfile)
+
+
+class _JobDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    company: str
+    company_quote: str
+    role: str
+    role_quote: str
+    company_info: str
+    jd: str
+    recruitment_start: str | None
+    recruitment_start_quote: str
+    recruitment_end: str | None
+    recruitment_end_quote: str
+    link_url: str
+    link_quote: str
+    events: list[_Event]
+
+
+class _IntakeBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    jobs: list[_JobDraft]
+    unassigned_events: list[_Event]
+    candidate_profile: _CandidateProfile
 
 
 _FULL_DATE = re.compile(
@@ -276,6 +307,162 @@ def extract_job_info(
         raise ExtractionError("AI 提取请求失败，请检查 API Key、网络及模型权限后重试。") from exc
     try:
         return _verify_result(parsed, text)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        raise ExtractionError("AI 返回的数据格式不正确，请重试或手动录入。") from exc
+
+
+def _verified_quote(value: str, quote: str, text: str) -> tuple[str, str, str]:
+    """Return a claim only when its quoted source contains it verbatim."""
+    value, quote = value.strip(), quote.strip()
+    if value and quote and quote in text and value in quote:
+        return value, quote, "原文匹配"
+    return "", quote if quote in text else "", "待确认"
+
+
+def _quote_owner(quote: str, jobs: list[dict]) -> int | None:
+    """Recognize only a unique company/role mention in the same source quote."""
+    if len(jobs) == 1:
+        return 0
+    matches: set[int] = set()
+    for index, job in enumerate(jobs):
+        for field in ("company", "role"):
+            marker = job[field]
+            if marker and sum(other[field] == marker for other in jobs) == 1 and marker in quote:
+                matches.add(index)
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _verify_batch(parsed: _IntakeBatch, text: str) -> dict:
+    if len(parsed.jobs) > 6:
+        raise ExtractionError("本次识别超过 6 个岗位，请分批粘贴后重试。")
+    jobs = [job.model_dump() for job in parsed.jobs]
+    seen_jobs: set[tuple[str, str]] = set()
+    for job in jobs:
+        evidence: dict[str, dict[str, str]] = {}
+        for field in ("company", "role"):
+            value, quote, status = _verified_quote(job[field], job[f"{field}_quote"], text)
+            job[field], job[f"{field}_quote"] = value, quote
+            evidence[field] = {"quote": quote, "status": status}
+        identity = (job["company"], job["role"])
+        if all(identity):
+            if identity in seen_jobs:
+                raise ExtractionError("AI 返回了重复的公司和岗位，请分批输入或重试。")
+            seen_jobs.add(identity)
+        for field in ("company_info", "jd"):
+            value = job[field].strip()
+            job[field] = value if value and value in text else ""
+            evidence[field] = {
+                "quote": job[field],
+                "status": "原文匹配" if job[field] else "待确认",
+            }
+        job["evidence"] = evidence
+
+    all_unassigned = _verify_result(
+        _JobInfo(
+            company="", role="", company_info="", jd="",
+            recruitment_start=None, recruitment_end=None,
+            events=parsed.unassigned_events,
+            candidate_profile=parsed.candidate_profile,
+        ),
+        text,
+    )
+    unassigned = all_unassigned["events"]
+    for index, (job, original) in enumerate(zip(jobs, parsed.jobs)):
+        evidence = job["evidence"]
+        for field in ("recruitment_start", "recruitment_end"):
+            quote = job[f"{field}_quote"].strip()
+            quoted = quote in text if quote else False
+            date_value = _verified_date(job[field], quote) if quoted else None
+            owner = _quote_owner(quote, jobs) if quoted else None
+            if len(jobs) > 1 and owner != index:
+                date_value = None
+            if field == "recruitment_end" and date_value and not _OFFICIAL_DEADLINE.search(quote):
+                date_value = None
+            job[field] = date_value
+            job[f"{field}_quote"] = quote if quoted else ""
+            evidence[field] = {
+                "quote": job[f"{field}_quote"],
+                "status": "原文匹配" if date_value else "待确认",
+            }
+        link = job["link_url"].strip()
+        quote = job["link_quote"].strip()
+        try:
+            link = validate_link_url(link)
+        except ValueError:
+            link = ""
+        if not (link and quote and quote in text and link in quote):
+            link = ""
+        if len(jobs) > 1 and _quote_owner(quote, jobs) != index:
+            link = ""
+        job["link_url"] = link
+        job["link_quote"] = quote if quote in text else ""
+        evidence["link_url"] = {
+            "quote": job["link_quote"],
+            "status": "原文匹配" if link else "待确认",
+        }
+        verified = _verify_result(
+            _JobInfo(
+                company=job["company"], role=job["role"],
+                company_info=job["company_info"], jd=job["jd"],
+                recruitment_start=None, recruitment_end=None,
+                events=original.events,
+            ),
+            text,
+        )
+        job["events"] = []
+        for event in verified["events"]:
+            if _quote_owner(event["source_quote"], jobs) == index:
+                job["events"].append(event)
+            else:
+                unassigned.append(event)
+    return {
+        "jobs": jobs,
+        "unassigned_events": unassigned,
+        "candidate_profile": all_unassigned["candidate_profile"],
+    }
+
+
+def extract_intake(
+    text: str,
+    reference_date: str | None = None,
+    *,
+    api_key: str | None = None,
+) -> dict:
+    """Extract multiple reviewable job drafts and one candidate profile."""
+    if not isinstance(text, str) or not text.strip():
+        raise ExtractionError("请先粘贴简历、JD、招聘通知或进度记录。")
+    source_limit = INTAKE_SKILL.input_limit("source_text")
+    if len(text) > source_limit.max_chars:
+        raise ExtractionError(f"信息分拣单次最多支持 {source_limit.max_chars} 个字符。")
+    if reference_date is not None:
+        try:
+            if reference_date != date.fromisoformat(reference_date).isoformat():
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise ExtractionError("参考日期请使用 YYYY-MM-DD 格式。") from exc
+    try:
+        parsed = parse_structured(
+            messages=[
+                {"role": "system", "content": BATCH_SYSTEM_PROMPT},
+                {"role": "user", "content": (
+                    f"reference_date（仅供上下文理解，不用来补全日期）：{reference_date or '未提供'}\n"
+                    f"以下是待提取的原文：\n{text}"
+                )},
+            ],
+            schema=_IntakeBatch,
+            operation=INTAKE_SKILL.operation,
+            max_output_tokens=INTAKE_SKILL.max_output_tokens,
+            timeout=INTAKE_SKILL.timeout_seconds,
+            api_key=api_key,
+        )
+    except LLMConfigurationError as exc:
+        raise ExtractionError(f"{exc}；设置后可使用 AI 提取，或先手动录入时间线。") from exc
+    except LLMRequestError as exc:
+        raise ExtractionError("AI 提取请求失败，请检查 API Key、网络及模型权限后重试。") from exc
+    try:
+        return _verify_batch(parsed, text)
     except ExtractionError:
         raise
     except Exception as exc:

@@ -10,9 +10,11 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+from job_agent.links import validate_link_url
+
 
 DEFAULT_DB_PATH = "data/applications.db"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _active_transaction: ContextVar[tuple[Path, sqlite3.Connection] | None] = ContextVar(
     "active_database_transaction", default=None
 )
@@ -34,7 +36,7 @@ EVENT_TYPES = frozenset(
 )
 DEADLINE_KINDS = frozenset({"官方截止", "自设截止", "建议跟进"})
 APPLICATION_FIELDS = frozenset(
-    {"company", "role", "jd", "company_info", "recruitment_start", "recruitment_end"}
+    {"company", "role", "jd", "company_info", "recruitment_start", "recruitment_end", "link_url"}
 )
 EVENT_FIELDS = frozenset(
     {
@@ -87,6 +89,7 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> None:
                 company_info TEXT NOT NULL DEFAULT '',
                 recruitment_start TEXT,
                 recruitment_end TEXT,
+                link_url TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -175,6 +178,10 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> None:
         if "company_info" not in columns:
             conn.execute(
                 "ALTER TABLE applications ADD COLUMN company_info TEXT NOT NULL DEFAULT ''"
+            )
+        if "link_url" not in columns:
+            conn.execute(
+                "ALTER TABLE applications ADD COLUMN link_url TEXT NOT NULL DEFAULT ''"
             )
         conn.executemany(
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
@@ -326,6 +333,8 @@ def _application_values(fields: dict[str, Any]) -> dict[str, Any]:
     for field in ("jd", "company_info"):
         if field in result:
             result[field] = str(result[field] or "")
+    if "link_url" in result:
+        result["link_url"] = validate_link_url(result["link_url"])
     for field in ("recruitment_start", "recruitment_end"):
         if field in result:
             result[field] = _iso_date(result[field], optional=True)
@@ -365,6 +374,7 @@ def create_application(
     recruitment_end: str | date | None = None,
     db_path: str | Path = DEFAULT_DB_PATH,
     company_info: str = "",
+    link_url: str = "",
 ) -> int:
     init_db(db_path)
     values = _application_values(
@@ -373,6 +383,7 @@ def create_application(
             "role": role,
             "jd": jd,
             "company_info": company_info,
+            "link_url": link_url,
             "recruitment_start": recruitment_start,
             "recruitment_end": recruitment_end,
         }
@@ -380,9 +391,9 @@ def create_application(
     with _connection(db_path) as conn:
         cursor = conn.execute(
             """INSERT INTO applications
-                (company, role, jd, company_info, recruitment_start, recruitment_end)
+                (company, role, jd, company_info, recruitment_start, recruitment_end, link_url)
                 VALUES (:company, :role, :jd, :company_info, :recruitment_start,
-                        :recruitment_end)""",
+                        :recruitment_end, :link_url)""",
             values,
         )
         return int(cursor.lastrowid)

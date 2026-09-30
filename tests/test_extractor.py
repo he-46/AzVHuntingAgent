@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from extractor import ExtractionError, _JobInfo, extract_job_info
+from extractor import ExtractionError, _IntakeBatch, _JobInfo, extract_intake, extract_job_info
 
 
 class _FakeResponses:
@@ -23,6 +23,76 @@ class _FakeResponses:
 
 
 class ExtractionTests(unittest.TestCase):
+    def _call_batch(self, text, parsed):
+        responses = _FakeResponses(_IntakeBatch.model_validate(parsed))
+        fake_openai = types.SimpleNamespace(
+            OpenAI=lambda **kwargs: types.SimpleNamespace(responses=responses)
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.dict(os.environ, {
+                "OPENAI_API_KEY": "test-key",
+                "JOB_AGENT_DB_PATH": str(Path(temporary) / "usage.db"),
+            }), patch.dict(sys.modules, {"openai": fake_openai}):
+                return extract_intake(text), responses.kwargs
+
+    def test_batch_keeps_jobs_separate_and_unassigns_ambiguous_events(self):
+        text = (
+            "甲公司招聘算法工程师。甲公司投递截止：2026年10月10日。"
+            "甲公司投递链接：https://jobs.example.com/a。"
+            "乙公司招聘数据分析师。乙公司投递截止：2026年10月20日。"
+            "乙公司投递链接：https://jobs.example.com/b。"
+            "2026年10月15日完成一面。"
+        )
+        def event(quote):
+            return {
+                "event_type": "面试完成", "event_date": "2026-10-15",
+                "details": "完成一面", "deadline_at": None,
+                "deadline_kind": None, "source": "输入文本",
+                "source_quote": quote, "feedback_score": None,
+            }
+        parsed = {
+            "jobs": [
+                {
+                    "company": "甲公司", "company_quote": "甲公司招聘算法工程师",
+                    "role": "算法工程师", "role_quote": "甲公司招聘算法工程师",
+                    "company_info": "", "jd": "",
+                    "recruitment_start": None, "recruitment_start_quote": "",
+                    "recruitment_end": "2026-10-10",
+                    "recruitment_end_quote": "甲公司投递截止：2026年10月10日",
+                    "link_url": "https://jobs.example.com/a",
+                    "link_quote": "甲公司投递链接：https://jobs.example.com/a",
+                    "events": [event("2026年10月15日完成一面")],
+                },
+                {
+                    "company": "乙公司", "company_quote": "乙公司招聘数据分析师",
+                    "role": "数据分析师", "role_quote": "乙公司招聘数据分析师",
+                    "company_info": "", "jd": "",
+                    "recruitment_start": None, "recruitment_start_quote": "",
+                    "recruitment_end": "2026-10-10",
+                    "recruitment_end_quote": "甲公司投递截止：2026年10月10日",
+                    "link_url": "https://jobs.example.com/b",
+                    "link_quote": "乙公司投递链接：https://jobs.example.com/b",
+                    "events": [],
+                },
+            ],
+            "unassigned_events": [],
+            "candidate_profile": {},
+        }
+        result, kwargs = self._call_batch(text, parsed)
+        self.assertEqual(len(result["jobs"]), 2)
+        self.assertEqual(result["jobs"][0]["recruitment_end"], "2026-10-10")
+        self.assertIsNone(result["jobs"][1]["recruitment_end"])
+        self.assertEqual(result["jobs"][1]["evidence"]["recruitment_end"]["status"], "待确认")
+        self.assertEqual(result["jobs"][0]["link_url"], "https://jobs.example.com/a")
+        self.assertEqual(result["jobs"][1]["link_url"], "https://jobs.example.com/b")
+        self.assertEqual(result["jobs"][0]["events"], [])
+        self.assertEqual(len(result["unassigned_events"]), 1)
+        self.assertIs(kwargs["text_format"], _IntakeBatch)
+        parsed["jobs"][1]["link_url"] = "https://made-up.example.com/apply"
+        result, _ = self._call_batch(text, parsed)
+        self.assertEqual(result["jobs"][1]["link_url"], "")
+        self.assertEqual(result["jobs"][1]["evidence"]["link_url"]["status"], "待确认")
+
     def _call_with_fake_response(self, text, parsed, reference_date=None):
         parsed = {
             "company_info": "",
