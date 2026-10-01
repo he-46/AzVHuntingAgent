@@ -14,7 +14,7 @@ if not exist "%VENV_PYTHON%" (
     ) else (
         python -m venv .venv
     )
-    if errorlevel 1 goto :error
+    if errorlevel 1 goto :python_error
 ) else (
     echo [1/3] 已找到虚拟环境。
 )
@@ -23,21 +23,32 @@ if not exist "%VENV_PYTHON%" (
 if errorlevel 1 (
     echo [2/3] 正在安装项目依赖...
     "%VENV_PYTHON%" -m pip install -r requirements.txt
-    if errorlevel 1 goto :error
+    if errorlevel 1 goto :dependency_error
 ) else (
     echo [2/3] 项目依赖已就绪。
 )
 
 echo [3/3] 正在启动求职时间线 Agent...
-echo 浏览器地址：http://127.0.0.1:8505
 echo 关闭本窗口或按 Ctrl+C 可停止服务。
-"%VENV_PYTHON%" -m streamlit run app.py --server.address 127.0.0.1 --server.port 8505 --server.showEmailPrompt false --browser.gatherUsageStats false
-if errorlevel 1 goto :error
+"%VENV_PYTHON%" launcher.py
+if errorlevel 1 goto :runtime_error
 goto :end
 
-:error
+:python_error
 echo.
-echo 启动失败，请检查上方错误信息。项目需要 Python 3.12 或更新版本。
+echo 虚拟环境创建失败，请确认已安装 Python 3.12 或更新版本。
+pause
+exit /b 1
+
+:dependency_error
+echo.
+echo 项目依赖安装失败，请检查上方的 pip 错误和网络连接。
+pause
+exit /b 1
+
+:runtime_error
+echo.
+echo 应用启动失败，请根据上方的具体错误检查端口或环境。
 pause
 exit /b 1
 
