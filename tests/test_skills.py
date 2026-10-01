@@ -8,7 +8,10 @@ from job_agent.skills import get_skill, list_skills
 class SkillRegistryTests(unittest.TestCase):
     def test_registered_skills_have_unique_operations_and_limits(self) -> None:
         skills = list_skills()
-        self.assertEqual({skill.key for skill in skills}, {"intake_extraction", "resume_generation"})
+        self.assertEqual({skill.key for skill in skills}, {
+            "intake_extraction", "job_extraction", "candidate_extraction",
+            "resume_material_matching", "resume_generation",
+        })
         self.assertEqual(len({skill.operation for skill in skills}), len(skills))
         self.assertTrue(all(skill.max_output_tokens > 0 for skill in skills))
         self.assertTrue(all(skill.input_limits for skill in skills))

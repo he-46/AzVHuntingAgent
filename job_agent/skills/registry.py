@@ -2,10 +2,13 @@
 
 from job_agent.skills.base import SkillSpec
 from job_agent.skills.intake import SPEC as INTAKE_SPEC
+from job_agent.skills.candidate import SPEC as CANDIDATE_SPEC
+from job_agent.skills.job import SPEC as JOB_SPEC
+from job_agent.skills.matching import SPEC as MATCHING_SPEC
 from job_agent.skills.resume import SPEC as RESUME_SPEC
 
 
-_SKILLS = (INTAKE_SPEC, RESUME_SPEC)
+_SKILLS = (INTAKE_SPEC, JOB_SPEC, CANDIDATE_SPEC, MATCHING_SPEC, RESUME_SPEC)
 _BY_KEY = {skill.key: skill for skill in _SKILLS}
 
 if len(_BY_KEY) != len(_SKILLS):

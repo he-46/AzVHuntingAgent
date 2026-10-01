@@ -18,34 +18,41 @@ from extractor import ExtractionError
 
 
 class AppSmokeTests(unittest.TestCase):
+    @staticmethod
+    def _profile_view(app):
+        return app.get_by_key("workspace_view").set_value("求职者资料").run()
+
     def test_profile_is_saved_once_and_updated_independently(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")
             with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}):
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
+                self._profile_view(app)
                 app.get_by_key("profile_editor_name").set_value("张三")
-                app.get_by_key("profile_editor_skills").set_value("Python，SQL")
+                app.get_by_key("add_profile_skills").click().run()
+                app.get_by_key("profile_item_skills_1").set_value("Python")
+                app.get_by_key("add_profile_skills").click().run()
+                app.get_by_key("profile_item_skills_2").set_value("SQL")
                 next(button for button in app.button if button.label == "保存求职者资料").click().run()
                 self.assertFalse(app.exception)
                 self.assertEqual(database.get_candidate_profile(db_path)["skills"], ["Python", "SQL"])
 
-                app.get_by_key("profile_editor_skills").set_value("Python，SQL，R")
+                app.get_by_key("add_profile_skills").click().run()
+                next(item for item in app.text_input if item.label.startswith("技能 3")).set_value("R")
                 next(button for button in app.button if button.label == "保存求职者资料").click().run()
                 self.assertFalse(app.exception)
                 self.assertEqual(database.get_candidate_profile(db_path)["skills"], ["Python", "SQL", "R"])
                 self.assertEqual(database.list_applications(db_path), [])
 
     def test_profile_ai_analysis_requires_review_before_save(self) -> None:
-        extracted = {
-            "candidate_profile": {"name": "张三", "skills": ["Python"], "projects": ["用户分析"]},
-            "jobs": [], "unassigned_events": [],
-        }
+        extracted = {"name": "张三", "skills": ["Python"], "projects": ["用户分析"]}
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")
             with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
-                "job_agent.ui.candidate.extract_intake", return_value=extracted
+                "job_agent.ui.candidate.extract_candidate_profile", return_value=extracted
             ):
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
+                self._profile_view(app)
                 app.get_by_key("profile_source_input").set_value("张三，会 Python，做过用户分析。")
                 next(
                     button for button in app.button
@@ -57,11 +64,28 @@ class AppSmokeTests(unittest.TestCase):
                 next(button for button in app.button if button.label == "保存求职者资料").click().run()
                 self.assertEqual(database.get_candidate_profile(db_path)["projects"], ["用户分析"])
 
+    def test_profile_entry_can_be_removed_without_touching_other_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = str(Path(temporary) / "applications.db")
+            database.save_candidate_profile({
+                "name": "张三", "skills": ["Python", "SQL"], "projects": ["用户增长项目"],
+            }, db_path=db_path)
+            with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}):
+                app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
+                self._profile_view(app)
+                skill_delete = next(
+                    button for button in app.button
+                    if (button.key or "").startswith("delete_profile_skills_")
+                )
+                skill_delete.click().run()
+                next(button for button in app.button if button.label == "保存求职者资料").click().run()
+                self.assertFalse(app.exception)
+            profile = database.get_candidate_profile(db_path)
+            self.assertEqual(profile["skills"], ["SQL"])
+            self.assertEqual(profile["projects"], ["用户增长项目"])
+
     def test_profile_ai_update_keeps_existing_items_in_review_draft(self) -> None:
-        extracted = {
-            "candidate_profile": {"name": "张三", "skills": ["SQL"]},
-            "jobs": [], "unassigned_events": [],
-        }
+        extracted = {"name": "张三", "skills": ["SQL"]}
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")
             database.save_candidate_profile(
@@ -69,16 +93,21 @@ class AppSmokeTests(unittest.TestCase):
                 db_path=db_path,
             )
             with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
-                "job_agent.ui.candidate.extract_intake", return_value=extracted
+                "job_agent.ui.candidate.extract_candidate_profile", return_value=extracted
             ):
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
+                self._profile_view(app)
                 app.get_by_key("profile_source_input").set_value("张三会 SQL。")
                 next(
                     button for button in app.button
                     if button.label == "AI 分析简历并填入资料草稿"
                 ).click().run()
-                self.assertEqual(app.get_by_key("profile_editor_skills").value, "Python，SQL")
-                self.assertEqual(app.get_by_key("profile_editor_projects").value, "旧项目")
+                self.assertEqual([
+                    item.value for item in app.text_input if item.label.startswith("技能 ")
+                ], ["Python", "SQL"])
+                self.assertEqual([
+                    item.value for item in app.text_area if item.label.startswith("项目经历 ")
+                ], ["旧项目"])
                 next(button for button in app.button if button.label == "保存求职者资料").click().run()
             self.assertEqual(database.get_candidate_profile(db_path)["skills"], ["Python", "SQL"])
 
@@ -98,7 +127,7 @@ class AppSmokeTests(unittest.TestCase):
                 {"name": "已保存姓名", "skills": ["Python"]}, db_path=db_path,
             )
             with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
-                "extractor.extract_intake", return_value=extracted
+                "extractor.extract_job_intake", return_value=extracted
             ):
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
                 next(widget for widget in app.text_area if widget.label == "总输入框").set_value(
@@ -115,7 +144,7 @@ class AppSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")
             with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
-                "extractor.extract_intake", side_effect=ExtractionError("test-only")
+                "extractor.extract_job_intake", side_effect=ExtractionError("test-only")
             ) as mocked:
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
                 app.get_by_key("llm_provider").set_value("兼容接口").run()
@@ -161,7 +190,7 @@ class AppSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")
             with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
-                "extractor.extract_intake", return_value=extracted
+                "extractor.extract_job_intake", return_value=extracted
             ):
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
                 next(widget for widget in app.text_area if widget.label == "总输入框").set_value(source)
@@ -207,12 +236,9 @@ class AppSmokeTests(unittest.TestCase):
                 )
                 self.assertIn("张三，统计学专业", value)
 
-    def test_resume_only_input_saves_candidate_profile(self) -> None:
+    def test_resume_only_input_uses_profile_workflow(self) -> None:
         source = "张三，示例大学统计学。曾在零售公司实习。技能：Python、SQL。"
         extracted = {
-            "jobs": [],
-            "unassigned_events": [],
-            "candidate_profile": {
                 "name": "张三",
                 "summary": "",
                 "education": ["示例大学统计学"],
@@ -220,16 +246,16 @@ class AppSmokeTests(unittest.TestCase):
                 "internships": ["曾在零售公司实习"],
                 "projects": [],
                 "skills": ["Python", "SQL"],
-            },
         }
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")
             with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
-                "extractor.extract_intake", return_value=extracted
+                "job_agent.ui.candidate.extract_candidate_profile", return_value=extracted
             ):
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
-                next(widget for widget in app.text_area if widget.label == "总输入框").set_value(source)
-                next(button for button in app.button if button.label == "AI 分拣信息").click().run()
+                self._profile_view(app)
+                app.get_by_key("profile_source_input").set_value(source)
+                next(button for button in app.button if button.label == "AI 分析简历并填入资料草稿").click().run()
                 self.assertEqual(app.get_by_key("profile_editor_name").value, "张三")
                 next(button for button in app.button if button.label == "保存求职者资料").click().run()
                 self.assertFalse(app.exception)
@@ -310,7 +336,7 @@ class AppSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")
             with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
-                "extractor.extract_intake", return_value=extracted
+                "extractor.extract_job_intake", return_value=extracted
             ):
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
                 next(widget for widget in app.text_area if widget.label == "总输入框").set_value(source)

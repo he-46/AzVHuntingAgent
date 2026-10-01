@@ -10,7 +10,10 @@
 
 当前能力：
 
-- `intake_extraction`：混合求职信息分拣；
+- `job_extraction`：岗位、JD、招聘日期和进度分拣；
+- `candidate_extraction`：只分析求职者简历资料；
+- `resume_material_matching`：按需推荐档案中已有的技能和项目，并核对 JD 原文依据；
+- `intake_extraction`：旧版混合求职信息分拣，保留供兼容调用；
 - `resume_generation`：基于证据的岗位定制简历。
 
-本地文档能力在 `documents.py` 中显式登记：Word/PDF 文字导入，以及定制简历 DOCX/PDF 导出。文件先在本机处理，只有用户点击 AI 分拣或简历生成后，相应输入文字才会发送给模型。
+本地文档能力在 `documents.py` 中显式登记：Word/PDF 文字导入，以及定制简历 DOCX/PDF 导出。文件先在本机处理，只有用户点击对应的 AI 分析、推荐或生成按钮后，相应输入文字才会发送给模型。

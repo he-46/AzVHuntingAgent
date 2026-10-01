@@ -151,6 +151,14 @@ def inject_styles() -> None:
             font-weight: 700;
             font-size: .83rem;
         }
+        button[data-variant="segmented_control"][aria-checked="true"] {
+            background: #E8ECFF !important;
+            border-color: #405DE6 !important;
+            color: #283EBA !important;
+        }
+        button[data-variant="segmented_control"][aria-checked="true"] * {
+            color: inherit !important;
+        }
         .summary-grid {
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));

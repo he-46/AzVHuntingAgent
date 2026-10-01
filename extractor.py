@@ -24,6 +24,8 @@ from job_agent.skills.intake import (
     BATCH_SYSTEM_PROMPT,
     SYSTEM_PROMPT as INTAKE_SYSTEM_PROMPT,
 )
+from job_agent.skills.candidate import SYSTEM_PROMPT as CANDIDATE_SYSTEM_PROMPT
+from job_agent.skills.job import SYSTEM_PROMPT as JOB_SYSTEM_PROMPT
 from job_agent.skills.registry import get_skill
 
 
@@ -43,6 +45,8 @@ EventType = Literal[
 ]
 
 INTAKE_SKILL = get_skill("intake_extraction")
+CANDIDATE_SKILL = get_skill("candidate_extraction")
+JOB_SKILL = get_skill("job_extraction")
 
 
 class ExtractionError(RuntimeError):
@@ -112,6 +116,13 @@ class _IntakeBatch(BaseModel):
     jobs: list[_JobDraft]
     unassigned_events: list[_Event]
     candidate_profile: _CandidateProfile
+
+
+class _JobIntakeBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    jobs: list[_JobDraft]
+    unassigned_events: list[_Event]
 
 
 _FULL_DATE = re.compile(
@@ -222,17 +233,8 @@ def _verify_result(parsed: _JobInfo, text: str) -> dict:
     for field in ("recruitment_start", "recruitment_end"):
         result[field] = _verified_date(result[field], text)
 
-    profile = result["candidate_profile"]
-    for field in ("name", "contact", "summary"):
-        value = profile[field].strip()
-        profile[field] = value if value and value in text else ""
-    for field in ("education", "experiences", "internships", "projects", "skills"):
-        verified: list[str] = []
-        for item in profile[field]:
-            value = item.strip()
-            if value and value in text and value not in verified:
-                verified.append(value)
-        profile[field] = verified
+    profile = _verify_candidate_fields(result["candidate_profile"], text)
+    result["candidate_profile"] = profile
 
     for event in result["events"]:
         quote = event["source_quote"].strip()
@@ -255,6 +257,59 @@ def _verify_result(parsed: _JobInfo, text: str) -> dict:
             event["feedback_score"], quote, event["event_type"]
         )
     return result
+
+
+def _verify_candidate_fields(profile: dict, text: str, *, exclude_job_segments: bool = False) -> dict:
+    """Keep only literal resume excerpts, including individual skill names."""
+    if exclude_job_segments:
+        # A pasted JD must not turn its required skills into candidate facts.
+        text = "\n".join(re.split(
+            r"(?:JD|岗位要求|任职要求|招聘要求|岗位职责)\s*[：:]?", line,
+            maxsplit=1, flags=re.IGNORECASE,
+        )[0] for line in text.splitlines())
+    for field in ("name", "contact", "summary"):
+        value = profile[field].strip()
+        profile[field] = value if value and value in text else ""
+    for field in ("education", "experiences", "internships", "projects", "skills"):
+        verified: list[str] = []
+        for item in profile[field]:
+            value = item.strip()
+            if value and value in text and value not in verified:
+                verified.append(value)
+        profile[field] = verified
+    return profile
+
+
+def extract_candidate_profile(
+    text: str,
+    *,
+    api_key: str | None = None,
+    llm_config: LLMRuntimeConfig | None = None,
+) -> dict:
+    """Analyze one resume without paying for the multi-job output schema."""
+    if not isinstance(text, str) or not text.strip():
+        raise ExtractionError("请先粘贴简历或导入文件。")
+    maximum = CANDIDATE_SKILL.input_limit("source_text").max_chars
+    if len(text) > maximum:
+        raise ExtractionError(f"简历原文单次最多支持 {maximum} 个字符。")
+    try:
+        parsed = parse_structured(
+            messages=[
+                {"role": "system", "content": CANDIDATE_SYSTEM_PROMPT},
+                {"role": "user", "content": f"简历原文：\n{text}"},
+            ],
+            schema=_CandidateProfile,
+            operation=CANDIDATE_SKILL.operation,
+            max_output_tokens=CANDIDATE_SKILL.max_output_tokens,
+            timeout=CANDIDATE_SKILL.timeout_seconds,
+            api_key=api_key,
+            llm_config=llm_config,
+        )
+    except LLMConfigurationError as exc:
+        raise ExtractionError(f"{exc}；也可手动填写求职者资料。") from exc
+    except LLMRequestError as exc:
+        raise ExtractionError("AI 分析简历失败，请检查模型配置及 JSON mode 支持后重试。") from exc
+    return _verify_candidate_fields(parsed.model_dump(), text, exclude_job_segments=True)
 
 
 def extract_job_info(
@@ -337,7 +392,7 @@ def _quote_owner(quote: str, jobs: list[dict]) -> int | None:
     return next(iter(matches)) if len(matches) == 1 else None
 
 
-def _verify_batch(parsed: _IntakeBatch, text: str) -> dict:
+def _verify_batch(parsed: _IntakeBatch | _JobIntakeBatch, text: str) -> dict:
     if len(parsed.jobs) > 6:
         raise ExtractionError("本次识别超过 6 个岗位，请分批粘贴后重试。")
     jobs = [job.model_dump() for job in parsed.jobs]
@@ -367,7 +422,7 @@ def _verify_batch(parsed: _IntakeBatch, text: str) -> dict:
             company="", role="", company_info="", jd="",
             recruitment_start=None, recruitment_end=None,
             events=parsed.unassigned_events,
-            candidate_profile=parsed.candidate_profile,
+            candidate_profile=getattr(parsed, "candidate_profile", _CandidateProfile()),
         ),
         text,
     )
@@ -468,6 +523,55 @@ def extract_intake(
         raise ExtractionError("AI 提取请求失败，请检查 API Key、模型 ID、接口地址及 JSON mode 支持后重试。") from exc
     try:
         return _verify_batch(parsed, text)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        raise ExtractionError("AI 返回的数据格式不正确，请重试或手动录入。") from exc
+
+
+def extract_job_intake(
+    text: str,
+    reference_date: str | None = None,
+    *,
+    api_key: str | None = None,
+    llm_config: LLMRuntimeConfig | None = None,
+) -> dict:
+    """Analyze job facts without sending a candidate-profile output schema."""
+    if not isinstance(text, str) or not text.strip():
+        raise ExtractionError("请先粘贴 JD、招聘通知或进度消息。")
+    maximum = JOB_SKILL.input_limit("source_text").max_chars
+    if len(text) > maximum:
+        raise ExtractionError(f"岗位信息单次最多支持 {maximum} 个字符。")
+    if reference_date is not None:
+        try:
+            if reference_date != date.fromisoformat(reference_date).isoformat():
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise ExtractionError("参考日期请使用 YYYY-MM-DD 格式。") from exc
+    try:
+        parsed = parse_structured(
+            messages=[
+                {"role": "system", "content": JOB_SYSTEM_PROMPT},
+                {"role": "user", "content": (
+                    f"reference_date（仅供上下文理解，不用来补全日期）：{reference_date or '未提供'}\n"
+                    f"以下是待提取的岗位原文：\n{text}"
+                )},
+            ],
+            schema=_JobIntakeBatch,
+            operation=JOB_SKILL.operation,
+            max_output_tokens=JOB_SKILL.max_output_tokens,
+            timeout=JOB_SKILL.timeout_seconds,
+            api_key=api_key,
+            llm_config=llm_config,
+        )
+    except LLMConfigurationError as exc:
+        raise ExtractionError(f"{exc}；也可手动录入岗位。") from exc
+    except LLMRequestError as exc:
+        raise ExtractionError("AI 分拣岗位失败，请检查模型配置及 JSON mode 支持后重试。") from exc
+    try:
+        result = _verify_batch(parsed, text)
+        result.pop("candidate_profile", None)
+        return result
     except ExtractionError:
         raise
     except Exception as exc:

@@ -30,6 +30,7 @@ class ResumeProfileSelectionTests(unittest.TestCase):
             )
             with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}):
                 app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
+                app.get_by_key("workspace_view").set_value("简历制作").run()
                 self.assertFalse(app.exception)
                 skill_key = f"resume_profile_skills_{application_id}"
                 project_key = f"resume_profile_projects_{application_id}"
@@ -47,6 +48,32 @@ class ResumeProfileSelectionTests(unittest.TestCase):
                 self.assertNotIn("Python", material)
                 self.assertNotIn("Java", material)
                 self.assertNotIn("用户增长分析项目", material)
+
+    def test_ai_recommendations_apply_only_after_click_and_remain_editable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = str(Path(temporary) / "applications.db")
+            database.save_candidate_profile({
+                "skills": ["Python", "SQL"], "projects": ["分析项目"],
+            }, db_path=db_path)
+            application_id = database.create_application(
+                "星辰科技", "数据分析师", jd="需要 SQL", db_path=db_path,
+            )
+            with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
+                "job_agent.ui.resume.recommend_profile_items",
+                return_value={
+                    "skills": [{"item": "SQL", "jd_quote": "SQL"}],
+                    "projects": [],
+                },
+            ) as mocked:
+                app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
+                app.get_by_key("workspace_view").set_value("简历制作").run()
+                mocked.assert_not_called()
+                app.get_by_key(f"ai_match_{application_id}").click().run()
+                self.assertFalse(app.exception)
+                mocked.assert_called_once()
+                self.assertEqual(app.get_by_key(f"resume_profile_skills_{application_id}").value, ["SQL"])
+                app.get_by_key(f"resume_profile_skills_{application_id}").set_value(["Python"]).run()
+                self.assertEqual(app.get_by_key(f"resume_profile_skills_{application_id}").value, ["Python"])
 
 
 if __name__ == "__main__":

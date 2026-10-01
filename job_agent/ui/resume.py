@@ -8,6 +8,7 @@ import re
 import streamlit as st
 
 import database
+from job_agent.services.resume_matching import MatchingError, recommend_profile_items
 from job_agent.llm.client import LLMRuntimeConfig
 from job_agent.documents import (
     DocumentError,
@@ -78,6 +79,25 @@ def _suggest_profile_items(jd: str, items: list[str], limit: int) -> list[str]:
     return [item for item in items if item in selected]
 
 
+def _local_match_reason(jd: str, item: str) -> str:
+    """Explain lexical overlap without claiming semantic or factual certainty."""
+    if item.casefold() in jd.casefold():
+        return "JD 直接提及该条目"
+    words = set(re.findall(r"[a-z][a-z0-9+#.]*", item.casefold()))
+    word_hits = [word for word in words if re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", jd.casefold())]
+    chinese_hits = []
+    for run in re.findall(r"[\u4e00-\u9fff]{2,}", item):
+        for size in (4, 3, 2):
+            for start in range(len(run) - size + 1):
+                phrase = run[start:start + size]
+                if phrase in jd and phrase not in chinese_hits:
+                    chinese_hits.append(phrase)
+            if chinese_hits:
+                break
+    hits = sorted(word_hits)[:2] + chinese_hits[:2]
+    return "JD 词面重合：" + "、".join(hits) if hits else "未发现明确词面匹配，请人工判断"
+
+
 def _import_base_resume(source_key: str, upload_key: str, notice_key: str) -> None:
     upload = st.session_state.get(upload_key)
     if upload is None:
@@ -143,17 +163,51 @@ def render_resume_workflow(
             fingerprint_key = f"resume_profile_selection_fingerprint_{application_id}"
             skill_key = f"resume_profile_skills_{application_id}"
             project_key = f"resume_profile_projects_{application_id}"
+            ai_reason_key = f"resume_profile_ai_reasons_{application_id}"
+            pending_ai_key = f"resume_pending_ai_selection_{application_id}"
             if st.session_state.get(fingerprint_key) != fingerprint:
                 st.session_state[fingerprint_key] = fingerprint
                 st.session_state[skill_key] = _suggest_profile_items(job.get("jd") or "", skills, 8)
                 st.session_state[project_key] = _suggest_profile_items(job.get("jd") or "", projects, 4)
-            st.caption("根据当前 JD 的关键词预选技能和项目；生成前可调整，未选中的条目不会进入本次素材。")
+                st.session_state.pop(ai_reason_key, None)
+                st.session_state.pop(pending_ai_key, None)
+            pending_ai = st.session_state.pop(pending_ai_key, None)
+            if pending_ai is not None:
+                st.session_state[skill_key] = [row["item"] for row in pending_ai["skills"]]
+                st.session_state[project_key] = [row["item"] for row in pending_ai["projects"]]
+                st.session_state[ai_reason_key] = {
+                    row["item"]: row["jd_quote"]
+                    for field in ("skills", "projects") for row in pending_ai[field]
+                }
+            st.caption("本地关键词预选不调用模型；生成前可调整，未选中的条目不会进入本次素材。")
             selected_skills = (
                 st.multiselect("本次使用的技能", skills, key=skill_key) if skills else []
             )
             selected_projects = (
                 st.multiselect("本次使用的项目", projects, key=project_key) if projects else []
             )
+            with st.expander("查看选择依据", expanded=bool(selected_skills or selected_projects)):
+                ai_reasons = st.session_state.get(ai_reason_key) or {}
+                for label, items in (("技能", selected_skills), ("项目", selected_projects)):
+                    for item in items:
+                        if item in ai_reasons:
+                            st.write(f"**{label} · {item}**：AI 建议；JD 原文「{ai_reasons[item]}」")
+                        else:
+                            st.write(f"**{label} · {item}**：{_local_match_reason(job.get('jd') or '', item)}")
+                if not selected_skills and not selected_projects:
+                    st.caption("尚未选取技能或项目。")
+            if skills or projects:
+                st.caption("AI 推荐会额外调用一次模型并计入统一用量；建议仅作参考，最终由你勾选。")
+                if st.button("AI 推荐本次技能和项目", key=f"ai_match_{application_id}"):
+                    try:
+                        with st.spinner("正在对照 JD 推荐已有素材…"):
+                            recommendation = recommend_profile_items(
+                                job.get("jd") or "", skills, projects, llm_config=llm_config,
+                            )
+                        st.session_state[pending_ai_key] = recommendation
+                        st.rerun()
+                    except MatchingError as exc:
+                        st.error(str(exc))
             if not skills and not projects:
                 st.info("档案中还没有结构化的技能或项目。可先在求职者资料区补充或使用 AI 分析简历。")
             if (skills or projects) and not (selected_skills or selected_projects):

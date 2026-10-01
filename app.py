@@ -12,7 +12,7 @@ import streamlit as st
 
 import database
 import domain
-from extractor import ExtractionError, extract_intake
+from extractor import ExtractionError, extract_job_intake
 from job_agent.config import Settings
 from job_agent.documents import DocumentError, extract_document_text
 from job_agent.llm.client import daily_usage_snapshot
@@ -306,7 +306,7 @@ def _unified_input(
 ) -> None:
     st.markdown('<div class="section-kicker">SMART INTAKE</div>', unsafe_allow_html=True)
     st.markdown("### 岗位信息输入")
-    st.caption("逐次粘贴岗位、JD、招聘链接和面试消息；AI 会分成岗位草稿，由你核对后保存。求职者资料请在上方长期档案维护。")
+    st.caption("逐次粘贴岗位、JD、招聘链接和面试消息；AI 会分成岗位草稿，由你核对后保存。个人简历请到「求职者资料」工作区维护。")
     st.caption("单次最多整理 6 个岗位；更多岗位请分批输入。")
     if st.session_state.pop("clear_unified_input", False):
         st.session_state["unified_input"] = ""
@@ -359,7 +359,7 @@ def _unified_input(
         else:
             try:
                 with st.spinner("正在分拣职位、日期和进度…"):
-                    result = extract_intake(
+                    result = extract_job_intake(
                         source_text,
                         reference_date=TODAY.isoformat(),
                         api_key=api_key,
@@ -372,13 +372,9 @@ def _unified_input(
                     "source_text": source_text,
                     "result": result,
                 }
-                if not result.get("jobs") and result.get("candidate_profile"):
-                    st.session_state["pending_profile_candidate"] = (
-                        result["candidate_profile"], source_text,
-                    )
+                if not result.get("jobs") and not result.get("unassigned_events"):
                     st.session_state.pop("unified_draft", None)
-                    st.session_state["clear_unified_input"] = True
-                    st.rerun()
+                    st.info("未识别到岗位。若输入的是个人简历，请切换到「求职者资料」分析。")
             except ExtractionError as exc:
                 st.error(str(exc))
 
@@ -738,6 +734,13 @@ def main() -> None:
     success_message = st.session_state.pop("flash_success", None)
     if success_message:
         st.success(success_message)
+    pending_view = st.session_state.pop("pending_workspace_view", None)
+    if pending_view in {"岗位看板", "求职者资料", "简历制作"}:
+        st.session_state["workspace_view"] = pending_view
+    st.segmented_control(
+        "工作区", ["岗位看板", "求职者资料", "简历制作"],
+        key="workspace_view", default="岗位看板",
+    )
 
     jobs = database.list_applications(db_path=DB_PATH)
     candidate_profile = database.get_candidate_profile(db_path=DB_PATH)
@@ -750,7 +753,7 @@ def main() -> None:
         del st.session_state["selected_application"]
     with st.sidebar:
         st.markdown("## 求职看板")
-        st.caption("选择一个岗位查看与编辑详情")
+        st.caption("选择岗位，并在主区域顶部切换工作区。")
         with st.expander("求职者资料概览", expanded=False):
             if candidate_profile:
                 st.write(f"**{candidate_profile.get('name') or '未填写姓名'}**")
@@ -819,10 +822,21 @@ def main() -> None:
                 st.session_state["flash_success"] = "已加载 4 组时间线示例数据。"
                 _rerun_after_change(sample_ids[0])
     llm_config = configured_llm()
-    render_candidate_profile(
-        candidate_profile, db_path=DB_PATH, llm_config=llm_config,
-        reference_date=TODAY.isoformat(),
-    )
+    view = st.session_state.get("workspace_view", "岗位看板")
+    if view == "求职者资料":
+        render_candidate_profile(
+            candidate_profile, db_path=DB_PATH, llm_config=llm_config,
+        )
+        return
+    if view == "简历制作":
+        if selected_id is None:
+            st.info("先在岗位看板添加一个岗位，再到这里制作定制简历。")
+            return
+        job = database.get_application(selected_id, db_path=DB_PATH)
+        if job:
+            render_resume_workflow(job, db_path=DB_PATH, llm_config=llm_config)
+        return
+
     _unified_input(jobs, selected_id, llm_config=llm_config)
     _create_job(first_job=not jobs)
     _portfolio_overview(jobs)
@@ -877,7 +891,6 @@ def main() -> None:
             st.write(f"• {reason}")
     st.caption(outlook.get("uncertainty") or "评估仅供整理进度参考。")
 
-    render_resume_workflow(job, db_path=DB_PATH, llm_config=llm_config)
     _add_event(selected_id)
     _edit_events(selected_id, events)
     _job_details(job)
