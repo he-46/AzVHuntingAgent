@@ -14,7 +14,7 @@ from job_agent.links import validate_link_url
 
 
 DEFAULT_DB_PATH = "data/applications.db"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _active_transaction: ContextVar[tuple[Path, sqlite3.Connection] | None] = ContextVar(
     "active_database_transaction", default=None
 )
@@ -138,6 +138,7 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             CREATE TABLE IF NOT EXISTS candidate_profile (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 name TEXT NOT NULL DEFAULT '',
+                contact TEXT NOT NULL DEFAULT '',
                 summary TEXT NOT NULL DEFAULT '',
                 education_json TEXT NOT NULL DEFAULT '[]',
                 experiences_json TEXT NOT NULL DEFAULT '[]',
@@ -183,6 +184,11 @@ def init_db(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             conn.execute(
                 "ALTER TABLE applications ADD COLUMN link_url TEXT NOT NULL DEFAULT ''"
             )
+        profile_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(candidate_profile)")
+        }
+        if "contact" not in profile_columns:
+            conn.execute("ALTER TABLE candidate_profile ADD COLUMN contact TEXT NOT NULL DEFAULT ''")
         conn.executemany(
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
             [(version,) for version in range(1, SCHEMA_VERSION + 1)],
@@ -551,25 +557,32 @@ def save_candidate_profile(
         value = profile.get(field) or []
         if not isinstance(value, list):
             raise ValueError(f"{field} 必须是列表")
-        normalized_lists[field] = [str(item).strip() for item in value if str(item).strip()]
+        normalized_lists[field] = list(dict.fromkeys(
+            str(item).strip() for item in value if str(item).strip()
+        ))
     values = {
         "name": str(profile.get("name") or "").strip(),
+        "contact": str(profile.get("contact") or "").strip(),
         "summary": str(profile.get("summary") or "").strip(),
         "source_text": str(source_text or ""),
         **{f"{field}_json": json.dumps(items, ensure_ascii=False) for field, items in normalized_lists.items()},
     }
-    if not any([values["name"], values["summary"], *normalized_lists.values()]):
+    if not any([
+        values["name"], values["contact"], values["summary"],
+        values["source_text"], *normalized_lists.values(),
+    ]):
         raise ValueError("求职者资料不能为空")
     init_db(db_path)
     with _connection(db_path) as conn:
         conn.execute(
             """INSERT INTO candidate_profile
-                (id, name, summary, education_json, experiences_json,
+                (id, name, contact, summary, education_json, experiences_json,
                  internships_json, projects_json, skills_json, source_text)
-                VALUES (1, :name, :summary, :education_json, :experiences_json,
+                VALUES (1, :name, :contact, :summary, :education_json, :experiences_json,
                         :internships_json, :projects_json, :skills_json, :source_text)
                 ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
+                    contact = excluded.contact,
                     summary = excluded.summary,
                     education_json = excluded.education_json,
                     experiences_json = excluded.experiences_json,

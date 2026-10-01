@@ -20,6 +20,7 @@ from job_agent.links import validate_link_url
 from job_agent.skills import list_local_document_skills, list_skills
 from job_agent.services.intake import save_reviewed_intake, sync_recruitment_event
 from job_agent.ui.backup import render_backup_controls
+from job_agent.ui.candidate import render_candidate_profile
 from job_agent.ui.llm_settings import configured_llm, render_llm_settings
 from job_agent.llm.client import LLMRuntimeConfig
 from job_agent.ui.portfolio import (
@@ -304,8 +305,8 @@ def _unified_input(
     llm_config: LLMRuntimeConfig | None = None,
 ) -> None:
     st.markdown('<div class="section-kicker">SMART INTAKE</div>', unsafe_allow_html=True)
-    st.markdown("### 一次粘贴，AI 自动分拣")
-    st.caption("把简历、多个岗位、JD、招聘链接和面试消息写在同一个框里。AI 会分成岗位草稿，由你逐项核对后保存。")
+    st.markdown("### 岗位信息输入")
+    st.caption("逐次粘贴岗位、JD、招聘链接和面试消息；AI 会分成岗位草稿，由你核对后保存。求职者资料请在上方长期档案维护。")
     st.caption("单次最多整理 6 个岗位；更多岗位请分批输入。")
     if st.session_state.pop("clear_unified_input", False):
         st.session_state["unified_input"] = ""
@@ -317,7 +318,6 @@ def _unified_input(
             placeholder=(
                 "例如：星辰科技招聘数据分析师。JD：负责业务指标分析……\n"
                 "招聘截止：2026年10月15日18:00。\n"
-                "我的简历：数据科学专业，掌握 Python、SQL，曾在零售公司实习。\n"
                 "我在2026年9月20日投递，2026年9月25日完成一面，自评4/5。"
             ),
             key="unified_input",
@@ -342,13 +342,12 @@ def _unified_input(
             """
             <div class="input-guide">
               <b>可以混合粘贴</b><br>
-              个人简历、教育与技能<br>
-              工作、实习和项目经历<br>
               公司与岗位信息<br>
               JD 或招聘公告<br>
               投递、测评、面试消息<br>
               截止日期与面试自评
-              <br>招聘公告或投递链接
+              <br>招聘公告或投递链接<br>
+              多个岗位可连续粘贴
             </div>
             """,
             unsafe_allow_html=True,
@@ -373,6 +372,13 @@ def _unified_input(
                     "source_text": source_text,
                     "result": result,
                 }
+                if not result.get("jobs") and result.get("candidate_profile"):
+                    st.session_state["pending_profile_candidate"] = (
+                        result["candidate_profile"], source_text,
+                    )
+                    st.session_state.pop("unified_draft", None)
+                    st.session_state["clear_unified_input"] = True
+                    st.rerun()
             except ExtractionError as exc:
                 st.error(str(exc))
 
@@ -400,7 +406,7 @@ def _unified_input(
     else:
         draft_index = None
         result = {}
-        st.info("本次没有识别到明确岗位。可以先保存求职者资料，或手动创建岗位。")
+        st.info("本次没有识别到明确岗位。可在上方的求职者资料区保存档案，或手动创建岗位。")
     widget_suffix = str(version) if draft_index in {None, 0} else f"{version}_{draft_index}"
     saved_target = draft.get("saved_targets", {}).get(draft_index)
     if saved_target is not None and not any(job["id"] == saved_target for job in jobs):
@@ -459,51 +465,14 @@ def _unified_input(
                 "人工确认": False,
             })
     candidate = batch.get("candidate_profile") or {}
+    if any(candidate.get(field) for field in (
+        "name", "contact", "summary", "education", "experiences", "internships", "projects", "skills"
+    )):
+        st.info("本次还识别到求职者资料；岗位保存不会改写长期档案。")
+        if st.button("将识别到的资料放入长期档案草稿", key=f"transfer_candidate_{version}"):
+            st.session_state["pending_profile_candidate"] = (candidate, draft["source_text"])
+            st.rerun()
     with st.form(f"review_unified_{version}"):
-        st.write("**求职者资料**")
-        candidate_name = st.text_input(
-            "姓名",
-            value=candidate.get("name") or "",
-            key=f"draft_candidate_name_{version}",
-        )
-        candidate_summary = st.text_area(
-            "个人简介",
-            value=candidate.get("summary") or "",
-            height=90,
-            key=f"draft_candidate_summary_{version}",
-        )
-        profile_col1, profile_col2 = st.columns(2)
-        education = profile_col1.text_area(
-            "教育经历（不同条目用空行分隔）",
-            value="\n\n".join(candidate.get("education") or []),
-            height=130,
-            key=f"draft_candidate_education_{version}",
-        )
-        experiences = profile_col2.text_area(
-            "工作经历（不同条目用空行分隔）",
-            value="\n\n".join(candidate.get("experiences") or []),
-            height=130,
-            key=f"draft_candidate_experiences_{version}",
-        )
-        profile_col3, profile_col4 = st.columns(2)
-        internships = profile_col3.text_area(
-            "实习经历（不同条目用空行分隔）",
-            value="\n\n".join(candidate.get("internships") or []),
-            height=130,
-            key=f"draft_candidate_internships_{version}",
-        )
-        projects = profile_col4.text_area(
-            "项目经历（不同条目用空行分隔）",
-            value="\n\n".join(candidate.get("projects") or []),
-            height=130,
-            key=f"draft_candidate_projects_{version}",
-        )
-        skills = st.text_input(
-            "技能（用逗号分隔）",
-            value="，".join(candidate.get("skills") or []),
-            key=f"draft_candidate_skills_{version}",
-        )
-        st.divider()
         if result:
             st.write("**岗位与招聘信息**")
             evidence = result.get("evidence") or {}
@@ -561,42 +530,16 @@ def _unified_input(
             st.caption("未确定归属的事件默认不导入。改动归属、日期或事件类型时，请勾选“人工确认”；只有当前岗位且勾选“导入”的事件会保存。")
         else:
             edited_events = pd.DataFrame(preview_rows)
-        profile_button, job_button = st.columns(2)
-        profile_saved = profile_button.form_submit_button("仅保存求职者资料", use_container_width=True)
-        saved = job_button.form_submit_button("确认保存当前岗位与时间线", use_container_width=True, disabled=not result)
+        saved = st.form_submit_button("确认保存当前岗位与时间线", use_container_width=True, disabled=not result)
 
     if st.button("结束本次核对并清除草稿", key=f"finish_review_{version}"):
         st.session_state.pop("unified_draft", None)
         st.session_state["clear_unified_input"] = True
         st.rerun()
 
-    if not saved and not profile_saved:
+    if not saved:
         return
     try:
-        def profile_items(value: str) -> list[str]:
-            return [item.strip() for item in value.replace("\r\n", "\n").split("\n\n") if item.strip()]
-
-        profile = {
-            "name": candidate_name.strip(),
-            "summary": candidate_summary.strip(),
-            "education": profile_items(education),
-            "experiences": profile_items(experiences),
-            "internships": profile_items(internships),
-            "projects": profile_items(projects),
-            "skills": [
-                item.strip()
-                for item in skills.replace("，", ",").replace("\n", ",").split(",")
-                if item.strip()
-            ],
-        }
-        if profile_saved:
-            database.save_candidate_profile(profile, source_text=draft["source_text"], db_path=DB_PATH)
-            if not draft_jobs:
-                st.session_state.pop("unified_draft", None)
-                st.session_state["clear_unified_input"] = True
-            st.session_state["flash_success"] = "求职者资料已保存；可继续核对岗位草稿。"
-            _rerun_after_change()
-
         start_date = _date_or_none(start)
         end_date = _date_or_none(end)
         if (
@@ -673,15 +616,6 @@ def _unified_input(
             events=prepared_events,
             source_text=draft["source_text"],
             db_path=DB_PATH,
-            candidate_profile=(
-                profile
-                if any([
-                    profile["name"], profile["summary"], profile["education"],
-                    profile["experiences"], profile["internships"],
-                    profile["projects"], profile["skills"],
-                ])
-                else None
-            ),
         )
         draft.setdefault("saved_targets", {})[draft_index] = application_id
         st.session_state["flash_success"] = (
@@ -817,7 +751,7 @@ def main() -> None:
     with st.sidebar:
         st.markdown("## 求职看板")
         st.caption("选择一个岗位查看与编辑详情")
-        with st.expander("求职者资料", expanded=False):
+        with st.expander("求职者资料概览", expanded=False):
             if candidate_profile:
                 st.write(f"**{candidate_profile.get('name') or '未填写姓名'}**")
                 if candidate_profile.get("summary"):
@@ -831,7 +765,7 @@ def main() -> None:
                     f"项目 {len(candidate_profile.get('projects') or [])} 条"
                 )
             else:
-                st.caption("在总输入框粘贴简历，AI 分析后即可保存。")
+                st.caption("在主页面的求职者资料区填写一次，之后随时更新。")
         render_llm_settings()
         with st.expander("AI 用量与限制", expanded=False):
             llm_usage = daily_usage_snapshot()
@@ -885,6 +819,10 @@ def main() -> None:
                 st.session_state["flash_success"] = "已加载 4 组时间线示例数据。"
                 _rerun_after_change(sample_ids[0])
     llm_config = configured_llm()
+    render_candidate_profile(
+        candidate_profile, db_path=DB_PATH, llm_config=llm_config,
+        reference_date=TODAY.isoformat(),
+    )
     _unified_input(jobs, selected_id, llm_config=llm_config)
     _create_job(first_job=not jobs)
     _portfolio_overview(jobs)

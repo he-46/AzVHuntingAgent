@@ -142,9 +142,8 @@ def save_reviewed_intake(
     events: list[dict],
     source_text: str,
     db_path: str,
-    candidate_profile: dict | None = None,
 ) -> tuple[int, int]:
-    """Save the reviewed job, events, source and profile as one unit."""
+    """Save a reviewed job, its events and source without touching the profile."""
     with database.atomic(db_path):
         result = _save_reviewed_intake_unchecked(
             target=target,
@@ -159,10 +158,6 @@ def save_reviewed_intake(
             source_text=source_text,
             db_path=db_path,
         )
-        if candidate_profile is not None:
-            database.save_candidate_profile(
-                candidate_profile, source_text=source_text, db_path=db_path
-            )
         return result
 
 

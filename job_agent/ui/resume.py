@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 import streamlit as st
@@ -17,12 +18,19 @@ from job_agent.documents import (
 from resume_agent import ResumeGenerationError, generate_resume_draft
 
 
-def _candidate_profile_markdown(profile: dict | None) -> str:
+def _candidate_profile_markdown(
+    profile: dict | None,
+    *,
+    selected_skills: list[str] | None = None,
+    selected_projects: list[str] | None = None,
+) -> str:
     if not profile:
         return ""
     sections: list[str] = []
     if profile.get("name"):
         sections.append(f"# {profile['name']}")
+    if profile.get("contact"):
+        sections.append(profile["contact"])
     if profile.get("summary"):
         sections.append(f"## 个人简介\n{profile['summary']}")
     for field, title in (
@@ -31,12 +39,43 @@ def _candidate_profile_markdown(profile: dict | None) -> str:
         ("internships", "实习经历"),
         ("projects", "项目经历"),
     ):
-        items = profile.get(field) or []
+        items = (
+            selected_projects if field == "projects" and selected_projects is not None
+            else profile.get(field) or []
+        )
         if items:
             sections.append(f"## {title}\n" + "\n".join(f"- {item}" for item in items))
-    if profile.get("skills"):
-        sections.append("## 技能\n" + "、".join(profile["skills"]))
+    skills = (profile.get("skills") or []) if selected_skills is None else selected_skills
+    if skills:
+        sections.append("## 技能\n" + "、".join(skills))
     return "\n\n".join(sections)
+
+
+def _suggest_profile_items(jd: str, items: list[str], limit: int) -> list[str]:
+    """Preselect literal skill matches and Chinese phrase overlaps for review."""
+    jd_lower = jd.casefold()
+    jd_terms = set(re.findall(r"[a-z][a-z0-9+#.]*", jd_lower))
+    jd_pairs = {
+        run[index:index + 2]
+        for run in re.findall(r"[\u4e00-\u9fff]+", jd_lower)
+        for index in range(len(run) - 1)
+    }
+    ranked: list[tuple[int, int, str]] = []
+    for index, item in enumerate(items):
+        lowered = item.casefold()
+        words = set(re.findall(r"[a-z][a-z0-9+#.]*", lowered))
+        pairs = {
+            run[position:position + 2]
+            for run in re.findall(r"[\u4e00-\u9fff]+", lowered)
+            for position in range(len(run) - 1)
+        }
+        score = 10 * (len(lowered) >= 2 and lowered in jd_lower)
+        score += 3 * len(words & jd_terms) + len(pairs & jd_pairs)
+        if score:
+            ranked.append((score, index, item))
+    ranked.sort(key=lambda row: (-row[0], row[1]))
+    selected = {item for _, _, item in ranked[:limit]}
+    return [item for item in items if item in selected]
 
 
 def _import_base_resume(source_key: str, upload_key: str, notice_key: str) -> None:
@@ -70,10 +109,11 @@ def render_resume_workflow(
     candidate_profile = database.get_candidate_profile(db_path=db_path)
     source_key = f"resume_source_{application_id}"
     draft_key = f"resume_draft_{application_id}"
+    draft_source_key = f"resume_draft_source_{application_id}"
     editor_key = f"resume_editor_{application_id}"
     upload_key = f"resume_upload_{application_id}"
     notice_key = f"resume_import_notice_{application_id}"
-    if source_key not in st.session_state:
+    if candidate_profile is None and source_key not in st.session_state:
         st.session_state[source_key] = (
             versions[0]["source_resume"]
             if versions
@@ -94,26 +134,65 @@ def render_resume_workflow(
     )
     with st.container(border=True):
         st.caption(f"当前目标：{job['company']} · {job['role']}")
-        st.file_uploader(
-            "导入基础简历（Word / PDF）", type=["docx", "pdf"], key=upload_key,
-        )
-        st.button(
-            "将文件文字放入基础简历",
-            key=f"import_resume_{application_id}",
-            on_click=_import_base_resume,
-            args=(source_key, upload_key, notice_key),
-            use_container_width=True,
-        )
-        notice = st.session_state.pop(notice_key, None)
-        if notice:
-            getattr(st, notice[0])(notice[1])
-        source_resume = st.text_area(
-            "基础简历",
-            height=260,
-            placeholder="粘贴你的现有简历。请包含真实的教育、经历、项目和技能信息。",
-            key=source_key,
-        )
-        st.caption("生成时，基础简历、当前 JD 和公司信息会发送至配置的模型服务。草稿不会自动投递。")
+        if candidate_profile:
+            skills = list(dict.fromkeys(candidate_profile.get("skills") or []))
+            projects = list(dict.fromkeys(candidate_profile.get("projects") or []))
+            fingerprint = hashlib.sha256(
+                repr((job.get("jd"), skills, projects, candidate_profile.get("updated_at"))).encode("utf-8")
+            ).hexdigest()
+            fingerprint_key = f"resume_profile_selection_fingerprint_{application_id}"
+            skill_key = f"resume_profile_skills_{application_id}"
+            project_key = f"resume_profile_projects_{application_id}"
+            if st.session_state.get(fingerprint_key) != fingerprint:
+                st.session_state[fingerprint_key] = fingerprint
+                st.session_state[skill_key] = _suggest_profile_items(job.get("jd") or "", skills, 8)
+                st.session_state[project_key] = _suggest_profile_items(job.get("jd") or "", projects, 4)
+            st.caption("根据当前 JD 的关键词预选技能和项目；生成前可调整，未选中的条目不会进入本次素材。")
+            selected_skills = (
+                st.multiselect("本次使用的技能", skills, key=skill_key) if skills else []
+            )
+            selected_projects = (
+                st.multiselect("本次使用的项目", projects, key=project_key) if projects else []
+            )
+            if not skills and not projects:
+                st.info("档案中还没有结构化的技能或项目。可先在求职者资料区补充或使用 AI 分析简历。")
+            if (skills or projects) and not (selected_skills or selected_projects):
+                st.info("没有明显匹配项。请按岗位需要手动勾选技能或项目；其他教育和经历仍会保留。")
+            source_resume = _candidate_profile_markdown(
+                candidate_profile,
+                selected_skills=selected_skills,
+                selected_projects=selected_projects,
+            )
+            if not any(
+                candidate_profile.get(field)
+                for field in (
+                    "summary", "education", "experiences", "internships", "projects", "skills",
+                )
+            ) and candidate_profile.get("source_text"):
+                source_resume = candidate_profile.get("source_text") or ""
+            st.text_area("本次送入模型的简历素材", value=source_resume, height=220, disabled=True)
+            st.caption("如需补充或修改经历，请先更新上方的求职者资料档案。")
+        else:
+            st.file_uploader(
+                "导入基础简历（Word / PDF）", type=["docx", "pdf"], key=upload_key,
+            )
+            st.button(
+                "将文件文字放入基础简历",
+                key=f"import_resume_{application_id}",
+                on_click=_import_base_resume,
+                args=(source_key, upload_key, notice_key),
+                use_container_width=True,
+            )
+            notice = st.session_state.pop(notice_key, None)
+            if notice:
+                getattr(st, notice[0])(notice[1])
+            source_resume = st.text_area(
+                "基础简历",
+                height=260,
+                placeholder="粘贴你的现有简历。请包含真实的教育、经历、项目和技能信息。",
+                key=source_key,
+            )
+        st.caption("生成时，本次简历素材、当前 JD 和公司信息会发送至配置的模型服务。草稿不会自动投递。")
         if st.button(
             "根据当前 JD 生成定制简历",
             type="primary",
@@ -132,6 +211,7 @@ def render_resume_workflow(
                         llm_config=llm_config,
                     )
                 st.session_state[draft_key] = draft
+                st.session_state[draft_source_key] = source_resume
                 st.session_state[editor_key] = draft["tailored_resume_markdown"]
                 st.rerun()
             except ResumeGenerationError as exc:
@@ -140,6 +220,8 @@ def render_resume_workflow(
     draft = st.session_state.get(draft_key)
     if draft:
         st.markdown("#### 核对并修改草稿")
+        if st.session_state.get(draft_source_key, source_resume) != source_resume:
+            st.warning("档案或所选素材已变化；当前草稿仍基于上次素材。保存会记录旧素材，若要应用新选择请重新生成。")
         tailored_resume = st.text_area("定制简历（Markdown）", height=460, key=editor_key)
         analysis_column, gap_column = st.columns(2)
         with analysis_column:
@@ -165,7 +247,7 @@ def render_resume_workflow(
             try:
                 database.add_resume_version(
                     application_id,
-                    source_resume,
+                    st.session_state.get(draft_source_key, source_resume),
                     tailored_resume,
                     "\n".join(draft.get("match_analysis") or []),
                     "\n".join(draft.get("missing_evidence") or []),

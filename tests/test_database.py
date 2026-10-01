@@ -27,6 +27,26 @@ from database import (
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_existing_candidate_profile_gains_contact_column(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute("""CREATE TABLE candidate_profile (
+                id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                education_json TEXT NOT NULL DEFAULT '[]',
+                experiences_json TEXT NOT NULL DEFAULT '[]',
+                internships_json TEXT NOT NULL DEFAULT '[]',
+                projects_json TEXT NOT NULL DEFAULT '[]',
+                skills_json TEXT NOT NULL DEFAULT '[]',
+                source_text TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""")
+            conn.execute("INSERT INTO candidate_profile(id, name) VALUES (1, '旧档案')")
+            conn.commit()
+        init_db(self.db_path)
+        self.assertEqual(get_candidate_profile(self.db_path)["name"], "旧档案")
+        self.assertEqual(get_candidate_profile(self.db_path)["contact"], "")
+
     def test_backup_restore_preserves_data_and_saves_previous_database(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")
@@ -112,7 +132,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(list_intake_entries(application_id, self.db_path)[0]["id"], entry_id)
         with closing(sqlite3.connect(self.db_path)) as conn:
             versions = [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
-        self.assertEqual(versions, [1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual(versions, [1, 2, 3, 4, 5, 6, 7, 8])
 
     def test_recruitment_link_roundtrip_and_scheme_validation(self):
         application_id = create_application(
@@ -134,6 +154,7 @@ class DatabaseTests(unittest.TestCase):
         save_candidate_profile(
             {
                 "name": "张三",
+                "contact": "zhangsan@example.com",
                 "summary": "数据分析方向",
                 "education": ["示例大学统计学"],
                 "experiences": [],
@@ -146,6 +167,7 @@ class DatabaseTests(unittest.TestCase):
         )
         profile = get_candidate_profile(self.db_path)
         self.assertEqual(profile["name"], "张三")
+        self.assertEqual(profile["contact"], "zhangsan@example.com")
         self.assertEqual(profile["skills"], ["Python", "SQL"])
         self.assertEqual(profile["source_text"], "原始简历")
 

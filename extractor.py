@@ -66,6 +66,7 @@ class _CandidateProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = ""
+    contact: str = ""
     summary: str = ""
     education: list[str] = Field(default_factory=list)
     experiences: list[str] = Field(default_factory=list)
@@ -222,7 +223,7 @@ def _verify_result(parsed: _JobInfo, text: str) -> dict:
         result[field] = _verified_date(result[field], text)
 
     profile = result["candidate_profile"]
-    for field in ("name", "summary"):
+    for field in ("name", "contact", "summary"):
         value = profile[field].strip()
         profile[field] = value if value and value in text else ""
     for field in ("education", "experiences", "internships", "projects", "skills"):
