@@ -1,7 +1,7 @@
-"""Extract reviewable recruitment facts from pasted text with OpenAI.
+"""Extract reviewable recruitment facts from pasted text with the selected model.
 
 This module has no side effects at import time. The API is called only from
-``extract_job_info`` and only when ``OPENAI_API_KEY`` is configured.
+``extract_job_info`` or ``extract_intake`` and only when credentials are configured.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from job_agent.links import validate_link_url
 
 from job_agent.llm.client import (
+    LLMRuntimeConfig,
     LLMConfigurationError,
     LLMRequestError,
     parse_structured,
@@ -260,13 +261,13 @@ def extract_job_info(
     reference_date: str | None = None,
     *,
     api_key: str | None = None,
+    llm_config: LLMRuntimeConfig | None = None,
 ) -> dict:
     """Extract job information and evidence-backed timeline events.
 
     ``reference_date`` is context only and never supplies a missing year or day.
     All returned dates are confirmed against literal, full dates in the pasted
-    text. A call requires ``OPENAI_API_KEY``; ``OPENAI_MODEL`` may override the
-    default ``gpt-4o-mini`` model.
+    text. The selected service needs its own API key.
     """
     if not isinstance(text, str) or not text.strip():
         raise ExtractionError("请先粘贴 JD、招聘通知或进度记录。")
@@ -300,11 +301,12 @@ def extract_job_info(
             max_output_tokens=INTAKE_SKILL.max_output_tokens,
             timeout=INTAKE_SKILL.timeout_seconds,
             api_key=api_key,
+            llm_config=llm_config,
         )
     except LLMConfigurationError as exc:
         raise ExtractionError(f"{exc}；设置后可使用 AI 提取，或先手动录入时间线。") from exc
     except LLMRequestError as exc:
-        raise ExtractionError("AI 提取请求失败，请检查 API Key、网络及模型权限后重试。") from exc
+        raise ExtractionError("AI 提取请求失败，请检查 API Key、模型 ID、接口地址及 JSON mode 支持后重试。") from exc
     try:
         return _verify_result(parsed, text)
     except ExtractionError:
@@ -429,6 +431,7 @@ def extract_intake(
     reference_date: str | None = None,
     *,
     api_key: str | None = None,
+    llm_config: LLMRuntimeConfig | None = None,
 ) -> dict:
     """Extract multiple reviewable job drafts and one candidate profile."""
     if not isinstance(text, str) or not text.strip():
@@ -456,11 +459,12 @@ def extract_intake(
             max_output_tokens=INTAKE_SKILL.max_output_tokens,
             timeout=INTAKE_SKILL.timeout_seconds,
             api_key=api_key,
+            llm_config=llm_config,
         )
     except LLMConfigurationError as exc:
         raise ExtractionError(f"{exc}；设置后可使用 AI 提取，或先手动录入时间线。") from exc
     except LLMRequestError as exc:
-        raise ExtractionError("AI 提取请求失败，请检查 API Key、网络及模型权限后重试。") from exc
+        raise ExtractionError("AI 提取请求失败，请检查 API Key、模型 ID、接口地址及 JSON mode 支持后重试。") from exc
     try:
         return _verify_batch(parsed, text)
     except ExtractionError:

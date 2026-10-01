@@ -7,6 +7,7 @@ import re
 import streamlit as st
 
 import database
+from job_agent.llm.client import LLMRuntimeConfig
 from job_agent.documents import (
     DocumentError,
     export_resume_docx,
@@ -62,6 +63,7 @@ def render_resume_workflow(
     *,
     db_path: str,
     api_key: str | None = None,
+    llm_config: LLMRuntimeConfig | None = None,
 ) -> None:
     application_id = job["id"]
     versions = database.list_resume_versions(application_id, db_path=db_path)
@@ -127,6 +129,7 @@ def render_resume_workflow(
                         jd=job.get("jd") or "",
                         company_info=job.get("company_info") or "",
                         api_key=api_key,
+                        llm_config=llm_config,
                     )
                 st.session_state[draft_key] = draft
                 st.session_state[editor_key] = draft["tailored_resume_markdown"]

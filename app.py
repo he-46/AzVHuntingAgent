@@ -20,7 +20,8 @@ from job_agent.links import validate_link_url
 from job_agent.skills import list_local_document_skills, list_skills
 from job_agent.services.intake import save_reviewed_intake, sync_recruitment_event
 from job_agent.ui.backup import render_backup_controls
-from job_agent.ui.llm_settings import configured_api_key, render_llm_settings
+from job_agent.ui.llm_settings import configured_llm, render_llm_settings
+from job_agent.llm.client import LLMRuntimeConfig
 from job_agent.ui.portfolio import (
     portfolio_chart as portfolio_chart_component,
     portfolio_snapshots as portfolio_snapshots_component,
@@ -300,6 +301,7 @@ def _unified_input(
     selected_id: int | None,
     *,
     api_key: str | None = None,
+    llm_config: LLMRuntimeConfig | None = None,
 ) -> None:
     st.markdown('<div class="section-kicker">SMART INTAKE</div>', unsafe_allow_html=True)
     st.markdown("### 一次粘贴，AI 自动分拣")
@@ -362,6 +364,7 @@ def _unified_input(
                         source_text,
                         reference_date=TODAY.isoformat(),
                         api_key=api_key,
+                        llm_config=llm_config,
                     )
                 version = st.session_state.get("unified_draft_version", 0) + 1
                 st.session_state["unified_draft_version"] = version
@@ -881,8 +884,8 @@ def main() -> None:
                 sample_ids = load_sample_data(DB_PATH, today=TODAY)
                 st.session_state["flash_success"] = "已加载 4 组时间线示例数据。"
                 _rerun_after_change(sample_ids[0])
-    api_key = configured_api_key()
-    _unified_input(jobs, selected_id, api_key=api_key)
+    llm_config = configured_llm()
+    _unified_input(jobs, selected_id, llm_config=llm_config)
     _create_job(first_job=not jobs)
     _portfolio_overview(jobs)
 
@@ -936,7 +939,7 @@ def main() -> None:
             st.write(f"• {reason}")
     st.caption(outlook.get("uncertainty") or "评估仅供整理进度参考。")
 
-    render_resume_workflow(job, db_path=DB_PATH, api_key=api_key)
+    render_resume_workflow(job, db_path=DB_PATH, llm_config=llm_config)
     _add_event(selected_id)
     _edit_events(selected_id, events)
     _job_details(job)

@@ -28,15 +28,36 @@ def inject_styles() -> None:
         }
         [data-testid="stSidebar"] {
             background: linear-gradient(180deg, #111A35 0%, #192444 100%);
+            color: #EEF2FF;
         }
-        [data-testid="stSidebar"] * { color: #EEF2FF; }
-        [data-testid="stSidebar"] [data-baseweb="select"] > div,
-        [data-testid="stSidebar"] input {
-            background: rgba(255,255,255,.09);
-            border-color: rgba(255,255,255,.16);
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] h4,
+        [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] > p {
+            color: #EEF2FF;
+        }
+        [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+            opacity: 1 !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+            color: #B8C3DC;
+        }
+        [data-testid="stSidebar"] .stButton > button:not([kind="primary"]) {
+            background: rgba(255,255,255,.09) !important;
+            border-color: rgba(255,255,255,.18) !important;
+            color: #F4F6FF !important;
+        }
+        [data-testid="stSidebar"] .stButton > button:not([kind="primary"]) * {
+            color: #F4F6FF !important;
+        }
+        [data-testid="stSidebar"] .stButton > button:not([kind="primary"]):hover {
+            background: rgba(255,255,255,.16) !important;
         }
         [data-testid="stSidebar"] [data-baseweb="select"] > div {
-            background: #FFFFFF;
+            background: #FFFFFF !important;
+            border-color: #DDE3EF !important;
         }
         [data-testid="stSidebar"] [data-baseweb="select"] input,
         [data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"] {
@@ -172,10 +193,32 @@ def inject_styles() -> None:
         }
         .resume-step b { display: block; color: #2942B9; margin-bottom: .2rem; }
         [data-testid="stTextArea"] textarea,
-        [data-testid="stTextInput"] input {
+        [data-testid="stTextInput"] input,
+        [data-testid="stNumberInput"] input,
+        [data-testid="stDateInput"] input,
+        [data-baseweb="select"] input,
+        [data-baseweb="select"] [role="combobox"] {
             border-radius: 12px;
-            border-color: #DDE3EF;
-            background: rgba(255,255,255,.94);
+            border-color: #DDE3EF !important;
+            background: #FFFFFF !important;
+            color: #263047 !important;
+            -webkit-text-fill-color: #263047 !important;
+            caret-color: #263047;
+        }
+        [data-testid="stTextArea"] textarea::placeholder,
+        [data-testid="stTextInput"] input::placeholder,
+        [data-testid="stNumberInput"] input::placeholder,
+        [data-testid="stDateInput"] input::placeholder,
+        [data-baseweb="select"] input::placeholder {
+            color: #67748B !important;
+            -webkit-text-fill-color: #67748B !important;
+            opacity: 1;
+        }
+        [data-baseweb="select"] [aria-selected],
+        [data-baseweb="popover"] [role="option"],
+        [data-baseweb="menu"] [role="option"] {
+            color: #263047 !important;
+            -webkit-text-fill-color: #263047 !important;
         }
         [data-testid="stTextArea"] textarea:focus,
         [data-testid="stTextInput"] input:focus {

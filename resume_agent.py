@@ -1,4 +1,4 @@
-"""Generate evidence-grounded, job-specific resume drafts with OpenAI."""
+"""Generate evidence-grounded, job-specific resume drafts with the selected model."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import re
 from pydantic import BaseModel, ConfigDict
 
 from job_agent.llm.client import (
+    LLMRuntimeConfig,
     LLMConfigurationError,
     LLMRequestError,
     parse_structured,
@@ -51,6 +52,7 @@ def generate_resume_draft(
     jd: str,
     company_info: str = "",
     api_key: str | None = None,
+    llm_config: LLMRuntimeConfig | None = None,
 ) -> dict:
     """Return a reviewable resume draft without inventing unsupported numbers."""
     if not isinstance(source_resume, str) or not source_resume.strip():
@@ -86,11 +88,12 @@ def generate_resume_draft(
             max_output_tokens=RESUME_SKILL.max_output_tokens,
             timeout=RESUME_SKILL.timeout_seconds,
             api_key=api_key,
+            llm_config=llm_config,
         )
     except LLMConfigurationError as exc:
         raise ResumeGenerationError(f"{exc}；设置后才能生成定制简历。") from exc
     except LLMRequestError as exc:
-        raise ResumeGenerationError("简历生成失败，请检查 API Key、网络及模型权限后重试。") from exc
+        raise ResumeGenerationError("简历生成失败，请检查 API Key、模型 ID、接口地址及 JSON mode 支持后重试。") from exc
     result = parsed.model_dump()
     draft = result["tailored_resume_markdown"].strip()
     if not draft:

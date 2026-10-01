@@ -16,6 +16,7 @@ import database
 from job_agent.llm.client import (
     LLMConfigurationError,
     LLMRequestError,
+    LLMRuntimeConfig,
     daily_usage_snapshot,
     parse_structured,
 )
@@ -33,6 +34,72 @@ def _try_reserve(callback, index: int) -> int | str:
 
 
 class LLMBudgetTests(unittest.TestCase):
+    def test_compatible_chat_json_is_validated_and_usage_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = str(Path(temporary) / "usage.db")
+            captured: dict = {}
+            response = types.SimpleNamespace(
+                choices=[types.SimpleNamespace(
+                    message=types.SimpleNamespace(content='{"value":"ok"}'),
+                    finish_reason="stop",
+                )],
+                usage=types.SimpleNamespace(prompt_tokens=18, completion_tokens=7, total_tokens=25),
+            )
+
+            def create(**arguments):
+                captured["request"] = arguments
+                return response
+
+            def openai_factory(**kwargs):
+                captured["client"] = kwargs
+                return types.SimpleNamespace(
+                    chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+                )
+
+            fake_openai = types.SimpleNamespace(OpenAI=openai_factory)
+            with patch.dict(os.environ, {
+                "JOB_AGENT_DB_PATH": db_path,
+                "OPENAI_API_KEY": "must-not-be-sent",
+            }), patch.dict(sys.modules, {"openai": fake_openai}):
+                result = parse_structured(
+                    messages=[{"role": "user", "content": "hello"}], schema=_Answer,
+                    operation="compatible-test", max_output_tokens=100,
+                    llm_config=LLMRuntimeConfig(
+                        api_key="compatible-key", model="custom-model",
+                        api_style="chat_completions", base_url="https://provider.example/v1",
+                    ),
+                )
+                self.assertEqual(daily_usage_snapshot()["total_tokens"], 25)
+            self.assertEqual(result.value, "ok")
+            self.assertEqual(captured["client"]["api_key"], "compatible-key")
+            self.assertEqual(captured["client"]["base_url"], "https://provider.example/v1")
+            self.assertEqual(captured["request"]["model"], "custom-model")
+            self.assertEqual(captured["request"]["response_format"], {"type": "json_object"})
+            self.assertIn("JSON Schema", captured["request"]["messages"][0]["content"])
+
+    def test_compatible_endpoint_never_uses_openai_environment_key(self) -> None:
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "openai-secret"}):
+            with self.assertRaisesRegex(LLMConfigurationError, "兼容接口的 API Key"):
+                parse_structured(
+                    messages=[{"role": "user", "content": "hello"}], schema=_Answer,
+                    operation="missing-compatible-key", max_output_tokens=100,
+                    llm_config=LLMRuntimeConfig(
+                        model="custom", api_style="chat_completions",
+                        base_url="https://provider.example/v1",
+                    ),
+                )
+
+    def test_compatible_endpoint_requires_https_except_localhost(self) -> None:
+        with self.assertRaisesRegex(LLMConfigurationError, "HTTPS URL"):
+            parse_structured(
+                messages=[{"role": "user", "content": "hello"}], schema=_Answer,
+                operation="unsafe-url", max_output_tokens=100,
+                llm_config=LLMRuntimeConfig(
+                    api_key="test-key", model="custom", api_style="chat_completions",
+                    base_url="http://provider.example/v1",
+                ),
+            )
+
     def test_failed_request_keeps_conservative_reservation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "usage.db")

@@ -14,9 +14,30 @@ from streamlit.testing.v1 import AppTest
 from docx import Document
 
 import database
+from extractor import ExtractionError
 
 
 class AppSmokeTests(unittest.TestCase):
+    def test_selected_compatible_model_reaches_intake(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = str(Path(temporary) / "applications.db")
+            with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}), patch(
+                "extractor.extract_intake", side_effect=ExtractionError("test-only")
+            ) as mocked:
+                app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
+                app.get_by_key("llm_provider").set_value("兼容接口").run()
+                app.get_by_key("llm_compatible_model").set_value("other-model").run()
+                app.get_by_key("llm_compatible_base_url").set_value("https://provider.example/v1").run()
+                app.get_by_key("兼容接口_api_key_input_0").set_value("other-key")
+                next(button for button in app.button if button.label == "应用密钥").click().run()
+                next(widget for widget in app.text_area if widget.label == "总输入框").set_value("示例职位")
+                next(button for button in app.button if button.label == "AI 分拣信息").click().run()
+                self.assertFalse(app.exception)
+                config = mocked.call_args.kwargs["llm_config"]
+                self.assertEqual((config.api_style, config.model, config.base_url, config.api_key), (
+                    "chat_completions", "other-model", "https://provider.example/v1", "other-key",
+                ))
+
     def test_multi_job_draft_saves_links_without_unassigned_event(self) -> None:
         source = (
             "甲公司招聘算法工程师，链接 https://jobs.example.com/a。"
