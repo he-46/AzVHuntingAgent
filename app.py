@@ -138,6 +138,27 @@ def _rerun_after_change(application_id: int | None = None) -> None:
     st.rerun()
 
 
+def _workspace_widget_key(key: str) -> bool:
+    return key in {"profile_source_input", "unified_input"} or key.startswith((
+        "profile_editor_", "profile_item_", "resume_profile_skills_",
+        "resume_profile_projects_", "resume_source_", "resume_editor_",
+    ))
+
+
+def _stash_workspace_widgets() -> None:
+    """Keep unsaved inputs when navigation temporarily stops rendering widgets."""
+    draft = st.session_state.setdefault("workspace_widget_draft", {})
+    for key in list(st.session_state):
+        if _workspace_widget_key(key):
+            draft[key] = st.session_state[key]
+
+
+def _restore_workspace_widgets() -> None:
+    for key, value in st.session_state.get("workspace_widget_draft", {}).items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
 def _import_documents_to_unified_input() -> None:
     uploads = st.session_state.get("unified_document_uploads") or []
     if not uploads:
@@ -460,14 +481,6 @@ def _unified_input(
                 "核对状态": "原文匹配" if item.get("source_quote") else "待确认",
                 "人工确认": False,
             })
-    candidate = batch.get("candidate_profile") or {}
-    if any(candidate.get(field) for field in (
-        "name", "contact", "summary", "education", "experiences", "internships", "projects", "skills"
-    )):
-        st.info("本次还识别到求职者资料；岗位保存不会改写长期档案。")
-        if st.button("将识别到的资料放入长期档案草稿", key=f"transfer_candidate_{version}"):
-            st.session_state["pending_profile_candidate"] = (candidate, draft["source_text"])
-            st.rerun()
     with st.form(f"review_unified_{version}"):
         if result:
             st.write("**岗位与招聘信息**")
@@ -737,9 +750,10 @@ def main() -> None:
     pending_view = st.session_state.pop("pending_workspace_view", None)
     if pending_view in {"岗位看板", "求职者资料", "简历制作"}:
         st.session_state["workspace_view"] = pending_view
+    _restore_workspace_widgets()
     st.segmented_control(
         "工作区", ["岗位看板", "求职者资料", "简历制作"],
-        key="workspace_view", default="岗位看板",
+        key="workspace_view", default="岗位看板", on_change=_stash_workspace_widgets,
     )
 
     jobs = database.list_applications(db_path=DB_PATH)

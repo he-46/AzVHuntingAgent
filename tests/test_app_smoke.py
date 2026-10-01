@@ -22,6 +22,27 @@ class AppSmokeTests(unittest.TestCase):
     def _profile_view(app):
         return app.get_by_key("workspace_view").set_value("求职者资料").run()
 
+    def test_switching_workspaces_keeps_unsaved_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = str(Path(temporary) / "applications.db")
+            with patch.dict(os.environ, {"JOB_AGENT_DB_PATH": db_path}):
+                app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py")).run(timeout=30)
+                app.get_by_key("unified_input").set_value("尚未分拣的岗位文本").run()
+                self._profile_view(app)
+                app.get_by_key("profile_editor_name").set_value("张三").run()
+                app.get_by_key("add_profile_skills").click().run()
+                next(item for item in app.text_input if item.label.startswith("技能 1")).set_value("Python").run()
+                app.get_by_key("workspace_view").set_value("岗位看板").run()
+                self.assertEqual(app.get_by_key("unified_input").value, "尚未分拣的岗位文本")
+                self._profile_view(app)
+                self.assertEqual(app.get_by_key("profile_editor_name").value, "张三")
+                self.assertEqual(
+                    next(item.value for item in app.text_input if item.label.startswith("技能 1")),
+                    "Python",
+                )
+                self.assertIsNone(database.get_candidate_profile(db_path))
+                self.assertFalse(app.exception)
+
     def test_profile_is_saved_once_and_updated_independently(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             db_path = str(Path(temporary) / "applications.db")
