@@ -8,3 +8,4 @@ data/*.db
 data/*.db-*
 data/backups/
 .env
+INTERVIEW_QA.md
